@@ -7,6 +7,7 @@ and time-travel state debugging.
 import copy
 import time
 import json
+import logging
 from typing import Dict, Any, Optional, Callable, List, Tuple
 from ascp_agent.state import AgentState, DiagnosticState, AIMessage, HumanMessage, Command, Send, InterruptSignal, interrupt
 from ascp_agent.drain_parser import DrainLogParser
@@ -14,8 +15,10 @@ from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.hitl_governance import HITLGovernanceEngine
 from ascp_agent.remediation import RemediationEngine, format_kill_session_sql, format_purge_staging_sql, format_recovery_command_block
 from ascp_agent.itsm_service_now import ServiceNowClient
-from ascp_agent.guardrails import EnterpriseGuardrails, ExecutionCapExceededError
+from ascp_agent.guardrails import EnterpriseGuardrails
 from ascp_agent.schema_validator import validate_schema_node, check_validation_routing
+
+logger = logging.getLogger(__name__)
 
 END = "__END__"
 
@@ -117,7 +120,7 @@ class PostgresSaver:
                         )
                     conn.commit()
             except Exception:
-                pass
+                logger.exception("Postgres checkpoint write failed for thread %s", thread_id)
         return step
 
     def get_latest(self, thread_id: str) -> Optional[CheckpointRecord]:
@@ -155,6 +158,7 @@ class CompiledStateGraph:
     def __init__(self, graph: StateGraph, checkpointer: MemorySaver):
         self.graph = graph
         self.checkpointer = checkpointer
+        self._guardrails_by_thread: Dict[str, EnterpriseGuardrails] = {}
 
     def invoke(
         self,
@@ -165,7 +169,13 @@ class CompiledStateGraph:
         """Executes the state graph until an interrupt gate or END is reached."""
         config = config or {}
         thread_id = config.get("configurable", {}).get("thread_id", "default_thread")
-        guardrails = config.get("guardrails") or EnterpriseGuardrails()
+        if "guardrails" in config:
+            guardrails = config["guardrails"]
+        elif thread_id in self._guardrails_by_thread:
+            guardrails = self._guardrails_by_thread[thread_id]
+        else:
+            guardrails = EnterpriseGuardrails()
+            self._guardrails_by_thread[thread_id] = guardrails
 
         # Handle resumption from prior checkpoint
         if resume_command is not None:
@@ -436,18 +446,36 @@ def hitl_gate_node(state: AgentState) -> dict:
     No database mutations occur before interrupt(). Upon resumption via Command(resume=...),
     the node re-executes cleanly, skips the interrupt, and executes the remediation exactly once.
     """
+    action = state.get("remediation_action")
+
+    # Idempotent guard: if already remediated, do not repeat execution
+    if state.get("is_remediated"):
+        return {
+            "remediation_approved": True,
+            "is_remediated": True,
+            "messages": [AIMessage(content=f"Remediation for '{action}' already executed previously (idempotent skip).")]
+        }
+
     confidence = state.get("confidence_score", 0.0)
     risk = state.get("risk_level", "HIGH")
-    action = state.get("remediation_action")
     blocker = next((x for x in state.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})
 
-    # Trigger HITL interrupt if confidence < 85% OR risk is HIGH (session kill / truncate)
-    requires_approval = (confidence < 85.0) or (risk == "HIGH") or (action == "KILL_SESSION")
+    # Safety Check: Abort if KILL_SESSION requested but no root blocker exists in telemetry
+    if action == "KILL_SESSION" and not blocker:
+        return {
+            "remediation_approved": False,
+            "is_remediated": False,
+            "messages": [AIMessage(content="KILL_SESSION aborted: no root blocker found in lock telemetry.")],
+        }
+
+    # Centralized governance evaluation (#15)
+    routing = HITLGovernanceEngine.evaluate_governance_routing(action or "", confidence)
+    requires_approval = (routing in ["MANDATORY_HITL_INTERRUPT", "CONDITIONAL_INTERRUPT"]) or (action == "KILL_SESSION")
 
     # If approval is required and neither approved nor human_response evaluated yet:
     if requires_approval and not state.get("remediation_approved") and state.get("human_response") is None:
         rec_sql = (
-            format_kill_session_sql(blocker.get("sid", 412), blocker.get("serial_number", 28419))
+            format_kill_session_sql(blocker["sid"], blocker["serial_number"])
             if action == "KILL_SESSION"
             else format_purge_staging_sql()
         )
@@ -455,8 +483,8 @@ def hitl_gate_node(state: AgentState) -> dict:
             "action": action,
             "risk_tier": risk,
             "confidence_score": confidence,
-            "target_sid": blocker.get("sid", 412),
-            "target_serial": blocker.get("serial_number", 28419),
+            "target_sid": blocker.get("sid"),
+            "target_serial": blocker.get("serial_number"),
             "target_object": blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")),
             "lock_mode": blocker.get("locked_mode_text", "Exclusive (X)"),
             "recommended_sql": rec_sql,
@@ -473,19 +501,11 @@ def hitl_gate_node(state: AgentState) -> dict:
             "messages": [AIMessage(content=f"Remediation action '{action}' rejected by DBA operator.")]
         }
 
-    # Idempotent guard: if already remediated, do not repeat execution
-    if state.get("is_remediated"):
-        return {
-            "remediation_approved": True,
-            "is_remediated": True,
-            "messages": [AIMessage(content=f"Remediation for '{action}' already executed previously (idempotent skip).")]
-        }
-
     # Execute remediation subroutine
     rem_engine = RemediationEngine()
     if action == "KILL_SESSION":
-        sid = blocker.get("sid", 412)
-        serial = blocker.get("serial_number", 28419)
+        sid = blocker["sid"]
+        serial = blocker["serial_number"]
         obj = blocker.get("object_name", "MSC_ST_DEMANDS")
         res = rem_engine.execute_kill_session(sid, serial, obj)
         return {
@@ -495,7 +515,8 @@ def hitl_gate_node(state: AgentState) -> dict:
             "messages": [AIMessage(content=res.message)]
         }
     elif action in ["PURGE_STAGING", "PURGE_STAGING_NO_VALIDATION"]:
-        res = rem_engine.execute_purge_staging_no_validation(instance_id=1001)
+        instance_id = state.get("context", {}).get("instance_id", 1001)
+        res = rem_engine.execute_purge_staging_no_validation(instance_id=instance_id)
         return {
             "remediation_approved": True,
             "is_remediated": True,

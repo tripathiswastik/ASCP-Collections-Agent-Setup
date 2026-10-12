@@ -4,9 +4,16 @@ Executes hierarchical lock queries to isolate root blocker sessions holding Mode
 on ASCP staging tables (MSC_ST_*).
 """
 
+import logging
 import time
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
+
+class LockQueryError(Exception):
+    """Raised when live Oracle lock query fails."""
+    pass
 
 LOCK_MODE_MAPPING = {
     0: ("NONE", "Lock requested but not yet obtained. Worker queued waiting on target table."),
@@ -131,42 +138,64 @@ class LockDiagnosticsEngine:
             return self.pool._async_pool
         return None
 
+    def _row_to_item(self, row_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert a single database row dict into a LockTelemetryItem dict."""
+        locked_mode = row_dict.get("locked_mode", 0) or 0
+        mode_text, impact = LOCK_MODE_MAPPING.get(locked_mode, ("UNKNOWN", "Undefined mode."))
+        item = LockTelemetryItem(
+            lock_depth=row_dict.get("lock_depth", 1),
+            is_blocked_leaf=row_dict.get("is_blocked_leaf", 1),
+            sid=row_dict.get("sid", 0),
+            serial_number=row_dict.get("serial_number", 0),
+            oracle_username=row_dict.get("oracle_username", "APPS"),
+            os_user_name=row_dict.get("os_user_name", "applmgr"),
+            os_process_id=str(row_dict.get("os_process_id", "")),
+            module=row_dict.get("module", ""),
+            action=row_dict.get("action", ""),
+            blocking_session=row_dict.get("blocking_session"),
+            object_id=row_dict.get("object_id"),
+            object_name=row_dict.get("object_name", "UNKNOWN"),
+            locked_mode=locked_mode,
+            locked_mode_text=mode_text,
+            operational_impact=impact,
+            current_sql_text=row_dict.get("current_sql_text", "")
+        )
+        return item.to_dict()
+
     def _map_query_rows(self, dict_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Maps raw row dictionaries to structured LockTelemetryItem dictionaries."""
-        results = []
-        for row_dict in dict_rows:
-            locked_mode = row_dict.get("locked_mode", 0) or 0
-            mode_text, impact = LOCK_MODE_MAPPING.get(locked_mode, ("UNKNOWN", "Undefined mode."))
-            item = LockTelemetryItem(
-                lock_depth=row_dict.get("lock_depth", 1),
-                is_blocked_leaf=row_dict.get("is_blocked_leaf", 1),
-                sid=row_dict.get("sid", 0),
-                serial_number=row_dict.get("serial_number", 0),
-                oracle_username=row_dict.get("oracle_username", "APPS"),
-                os_user_name=row_dict.get("os_user_name", "applmgr"),
-                os_process_id=str(row_dict.get("os_process_id", "")),
-                module=row_dict.get("module", ""),
-                action=row_dict.get("action", ""),
-                blocking_session=row_dict.get("blocking_session"),
-                object_id=row_dict.get("object_id"),
-                object_name=row_dict.get("object_name", "UNKNOWN"),
-                locked_mode=locked_mode,
-                locked_mode_text=mode_text,
-                operational_impact=impact,
-                current_sql_text=row_dict.get("current_sql_text", "")
-            )
-            results.append(item.to_dict())
+        return [self._row_to_item(r) for r in dict_rows]
+
+    def _query_live_oracle(self) -> List[Dict[str, Any]]:
+        """Run the hierarchical lock query against live Oracle. Raises on failure."""
+        results: List[Dict[str, Any]] = []
+        oracledb_mod = getattr(self.pool, "_oracledb", None)
+        if oracledb_mod is None:
+            import oracledb
+            oracledb_mod = oracledb
+        cfg = self.config or getattr(self.pool, "config", None)
+        with oracledb_mod.connect(
+            user=cfg.username,
+            password=cfg.password,
+            host=cfg.host,
+            port=cfg.port,
+            service_name=cfg.service_name,
+        ) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(HIERARCHICAL_LOCK_SQL)
+                cols = [c[0].lower() for c in cursor.description]
+                for row in cursor.fetchall():
+                    results.append(self._row_to_item(dict(zip(cols, row))))
         return results
 
     async def execute_hierarchical_lock_query_async(self) -> List[Dict[str, Any]]:
-        """Executes non-blocking async hierarchical query via async connection pool or simulation fallback."""
+        """Executes non-blocking async hierarchical query via live query or simulation."""
         if not self.pool.is_simulation:
             try:
-                res = await self.pool.execute_query_async(HIERARCHICAL_LOCK_SQL)
-                if not res.is_simulated and res.rows:
-                    return self._map_query_rows(res.to_dicts())
-            except Exception:
-                pass
+                return self._query_live_oracle()
+            except Exception as exc:
+                logger.exception("Live lock query failed")
+                raise LockQueryError("Live Oracle lock query failed") from exc
         return self._generate_simulated_lock_telemetry()
 
     def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> List[Dict[str, Any]]:
@@ -177,14 +206,13 @@ class LockDiagnosticsEngine:
 
         if not self.pool.is_simulation:
             try:
-                res = self.pool.execute_query(HIERARCHICAL_LOCK_SQL)
-                if not res.is_simulated and res.rows:
-                    mapped = self._map_query_rows(res.to_dicts())
-                    self._cached_telemetry = mapped
-                    self._cache_timestamp = now
-                    return mapped
-            except Exception:
-                pass
+                mapped = self._query_live_oracle()
+                self._cached_telemetry = mapped
+                self._cache_timestamp = now
+                return mapped
+            except Exception as exc:
+                logger.exception("Live lock query failed")
+                raise LockQueryError("Live Oracle lock query failed") from exc
 
         res = self._generate_simulated_lock_telemetry()
         self._cached_telemetry = res

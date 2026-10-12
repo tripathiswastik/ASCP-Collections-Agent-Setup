@@ -6,6 +6,14 @@
  */
 
 document.addEventListener('DOMContentLoaded', () => {
+  // API Security Configuration
+  const API_TOKEN = 'dev-token';
+  const apiFetch = (url, options = {}) => {
+    const headers = options.headers ? { ...options.headers } : {};
+    headers['X-API-Token'] = API_TOKEN;
+    return fetch(url, { ...options, headers });
+  };
+
   // Core Navigation & Selectors
   const scenarioSelector = document.getElementById('scenarioSelector');
   const scenarioPresets = document.getElementById('scenarioPresets');
@@ -203,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
 
-    await fetch('/api/scenario/load', {
+    await apiFetch('/api/scenario/load', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: scenKey })
@@ -225,7 +233,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadScenarios() {
     try {
-      const res = await fetch('/api/scenarios');
+      const res = await apiFetch('/api/scenarios');
       const data = await res.json();
       scenarioSelector.innerHTML = '';
       data.scenarios.forEach(sc => {
@@ -241,7 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function refreshTelemetry() {
     try {
-      const res = await fetch('/api/status');
+      const res = await apiFetch('/api/status');
       const data = await res.json();
 
       const reg = data.registry;
@@ -271,7 +279,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadLockTree() {
     try {
-      const res = await fetch('/api/locks');
+      const res = await apiFetch('/api/locks');
       const data = await res.json();
       activeTelemetry = data.telemetry || [];
       const root = data.root_blocker;
@@ -592,7 +600,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Retrieve active scenario logs
     let logs = [];
     try {
-      const scenRes = await fetch('/api/status');
+      const scenRes = await apiFetch('/api/status');
       const scenData = await scenRes.json();
       logs = scenData.scenario.logs || [];
     } catch (e) {
@@ -636,7 +644,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Trigger incremental Drain parse
       try {
-        const parseRes = await fetch('/api/parse-log', {
+        const parseRes = await apiFetch('/api/parse-log', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ log_text: accumulatedLogs.join('\n') })
@@ -694,7 +702,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function runDrainParsing() {
     try {
-      const res = await fetch('/api/parse-log', {
+      const res = await apiFetch('/api/parse-log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -714,7 +722,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnRunDiagnosis.innerHTML = 'Analyzing...';
 
     try {
-      const res = await fetch('/api/diagnose', {
+      const res = await apiFetch('/api/diagnose', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'START' })
@@ -766,7 +774,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function resumeAgentExecution(approved) {
     setActiveNode('nodeRemediation');
     try {
-      const res = await fetch('/api/diagnose', {
+      const res = await apiFetch('/api/diagnose', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

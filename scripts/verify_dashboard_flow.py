@@ -11,10 +11,12 @@ import sys
 def run_verification(base_url="http://localhost:8085"):
     def req(endpoint, data=None):
         url = f"{base_url}{endpoint}"
+        headers = {'X-API-Token': 'dev-token'}
         if data is not None:
-            r = urllib.request.Request(url, data=json.dumps(data).encode(), headers={'Content-Type': 'application/json'})
+            headers['Content-Type'] = 'application/json'
+            r = urllib.request.Request(url, data=json.dumps(data).encode(), headers=headers)
         else:
-            r = urllib.request.Request(url)
+            r = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(r) as res:
             return json.loads(res.read().decode())
 

@@ -41,6 +41,8 @@ class TokenTracker:
                 f"Hard token spend cap of ${self.spend_cap_usd:.2f} exceeded! Current spend: ${self.total_cost_usd:.4f}. Human escalation triggered."
             )
 
+_KILL_PATTERN = re.compile(r"^ALTER SYSTEM KILL SESSION '\d+,\d+' IMMEDIATE$")
+
 class EnterpriseGuardrails:
     """Enforces least-privilege, sanitization, step limits, and cost controls."""
 
@@ -85,31 +87,24 @@ class EnterpriseGuardrails:
         return user_or_log_text.strip()
 
     def validate_sql_command(self, sql_statement: str) -> bool:
-        """Validates that proposed SQL adheres to least-privilege policies."""
+        """Allow only single read-only queries, an exact kill statement, or allowlisted procedures."""
         if not self.config.enforce_least_privilege:
             return True
-
-        # Check forbidden patterns
-        for pattern in self.FORBIDDEN_SQL_PATTERNS:
-            if pattern.search(sql_statement):
-                raise SecurityViolationError(
-                    f"Unauthorized SQL operation detected: statement matches forbidden policy '{pattern.pattern}'."
-                )
-
-        # Allow SELECT queries on dynamic views or authorized wrapper procedures
-        clean_sql = sql_statement.strip().upper()
-        if clean_sql.startswith("SELECT") or clean_sql.startswith("WITH"):
+        statement = sql_statement.strip().rstrip(";").strip()
+        upper = statement.upper()
+        if upper.startswith(("SELECT ", "WITH ")):
+            if ";" in statement:
+                raise SecurityViolationError("Multiple statements are not allowed.")
             return True
-
-        if clean_sql.startswith("ALTER SYSTEM KILL SESSION"):
-            # Permitted only under high-risk gate approval
-            return True
-
-        for allowed_proc in self.config.allowed_mutation_procedures:
-            if allowed_proc.upper() in clean_sql:
+        if _KILL_PATTERN.match(upper):
+            return True  # approval for this is enforced by the HITL gate, not here
+        for procedure in self.config.allowed_mutation_procedures:
+            proc_up = procedure.upper()
+            if upper.startswith(f"BEGIN {proc_up}(") or upper.startswith(f"EXEC {proc_up}("):
                 return True
-
-        return True
+        if ";" in statement:
+            raise SecurityViolationError("Multiple statements are not allowed.")
+        raise SecurityViolationError(f"Statement not on the allowlist: {statement[:80]}")
 
     def track_tokens(self, input_tokens: int, output_tokens: int):
         """Tracks token expenditure against the $5.00 hard cap."""

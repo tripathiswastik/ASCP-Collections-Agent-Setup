@@ -20,24 +20,24 @@ class TestSafetyAndGovernance(unittest.TestCase):
 
     def test_oracle_config_fail_closed_without_password(self):
         """Validates that production Oracle connection fails closed when password is unset."""
-        cfg = OracleConfig(use_simulation=False, password="", host="prod-db.corp.com")
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises((ValueError, RuntimeError)) as ctx:
+            cfg = OracleConfig(use_simulation=False, password="", host="prod-db.corp.com")
             cfg.validate()
-        self.assertIn("ORACLE_PASSWORD is empty or unset", str(ctx.exception))
+        self.assertIn("ORACLE_PASSWORD", str(ctx.exception))
 
     def test_oracle_config_fail_closed_with_mock_host(self):
         """Validates that production Oracle connection fails closed when mock host is specified."""
         cfg = OracleConfig(use_simulation=False, password="RealPassword123!", host="ebs-db.corp.internal")
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises((ValueError, RuntimeError)) as ctx:
             cfg.validate()
         self.assertIn("default mock endpoint", str(ctx.exception))
 
     def test_servicenow_config_fail_closed_without_password(self):
         """Validates that production ServiceNow integration fails closed when password is unset."""
-        cfg = ServiceNowConfig(enabled=True, dry_run=False, password="")
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises((ValueError, RuntimeError)) as ctx:
+            cfg = ServiceNowConfig(enabled=True, dry_run=False, password="")
             cfg.validate()
-        self.assertIn("SN_PASSWORD is empty or unset", str(ctx.exception))
+        self.assertIn("SN_PASSWORD", str(ctx.exception))
 
     def test_oracle_identifier_sql_injection_rejection(self):
         """Validates that SQL injection payloads in table or procedure names are strictly rejected."""

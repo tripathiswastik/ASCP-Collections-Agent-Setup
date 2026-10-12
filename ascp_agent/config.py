@@ -6,15 +6,21 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, Any
 
+class ConfigValidationError(RuntimeError, ValueError):
+    """Raised when configuration fails fail-closed validation."""
+    pass
+
 @dataclass
 class OracleConfig:
-    host: str = os.getenv("ORACLE_HOST", "ebs-db.corp.internal")
-    port: int = int(os.getenv("ORACLE_PORT", "1521"))
-    service_name: str = os.getenv("ORACLE_SERVICE", "EBSPROD")
-    username: str = os.getenv("ORACLE_USER", "APPS_DIAG")
-    password: str = os.getenv("ORACLE_PASSWORD", "")  # No hardcoded password; load via environment or vault
-    mode: str = os.getenv("ORACLE_DRIVER_MODE", "thin")  # thin driver or thick
-    use_simulation: bool = os.getenv("ORACLE_SIMULATION", "true").lower() == "true"
+    host: str = field(default_factory=lambda: os.getenv("ORACLE_HOST", "ebs-db.corp.internal"))
+    port: int = field(default_factory=lambda: int(os.getenv("ORACLE_PORT", "1521")))
+    service_name: str = field(default_factory=lambda: os.getenv("ORACLE_SERVICE", "EBSPROD"))
+    username: str = field(default_factory=lambda: os.getenv("ORACLE_USER", "APPS_DIAG"))
+    password: str = field(default_factory=lambda: os.getenv("ORACLE_PASSWORD", ""), repr=False)
+    mode: str = field(default_factory=lambda: os.getenv("ORACLE_DRIVER_MODE", "thin"))
+    use_simulation: bool = field(
+        default_factory=lambda: os.getenv("ORACLE_SIMULATION", "true").lower() == "true"
+    )
     # ASCP Collection Profile Options
     source_setup_required: str = "Yes"                  # MSC: Source Setup Required
     purge_stg_tbl_cntrl: str = "Yes"                     # MSC: Purge Stg Tbl Cntrl
@@ -22,41 +28,35 @@ class OracleConfig:
     purge_batch_size: int = 25000                        # MRP: Purge Batch Size
     db_links: Dict[str, str] = field(default_factory=lambda: {"source_to_aps": "A2M_DBLINK", "aps_to_source": "M2A_DBLINK"})
 
+    def __post_init__(self) -> None:
+        if not self.use_simulation and not self.password:
+            raise ConfigValidationError("ORACLE_PASSWORD must be set when ORACLE_SIMULATION is false. (ORACLE_PASSWORD is empty or unset)")
+
     def validate(self) -> None:
         """Fail-closed validation: ensure production credentials exist if simulation is disabled."""
-        if not self.use_simulation:
-            if not self.password or not self.password.strip():
-                raise ValueError(
-                    "Production Oracle integration failed closed: ORACLE_PASSWORD is empty or unset. "
-                    "Set ORACLE_PASSWORD in the environment or enable ORACLE_SIMULATION=true."
-                )
-            if self.host in ("ebs-db.corp.internal", "localhost", "127.0.0.1") and not os.getenv("ORACLE_ALLOW_LOCAL"):
-                # Default mock host shouldn't be used in production mode
-                raise ValueError(
-                    f"Production Oracle integration failed closed: host '{self.host}' is configured with default mock endpoint. "
-                    "Specify a valid production database host via ORACLE_HOST."
-                )
+        self.__post_init__()
+        if not self.use_simulation and self.host == "ebs-db.corp.internal":
+            raise ConfigValidationError("Production connection cannot target default mock endpoint 'ebs-db.corp.internal'.")
 
 @dataclass
 class ServiceNowConfig:
-    instance_url: str = os.getenv("SN_INSTANCE_URL", "https://enterprise-it.service-now.com")
+    instance_url: str = field(default_factory=lambda: os.getenv("SN_INSTANCE_URL", "https://enterprise-it.service-now.com"))
     table_api_path: str = "/api/now/table/incident"
-    username: str = os.getenv("SN_USER", "ascp_agent_svc")
-    password: str = os.getenv("SN_PASSWORD", "")  # No hardcoded password; load via environment or vault
+    username: str = field(default_factory=lambda: os.getenv("SN_USER", "ascp_agent_svc"))
+    password: str = field(default_factory=lambda: os.getenv("SN_PASSWORD", ""), repr=False)
     assignment_group: str = "Database Administration"
     default_impact: str = "2"
     default_urgency: str = "2"
-    enabled: bool = os.getenv("SN_ENABLED", "true").lower() == "true"
-    dry_run: bool = os.getenv("SN_DRY_RUN", "true").lower() == "true"
+    enabled: bool = field(default_factory=lambda: os.getenv("SN_ENABLED", "true").lower() == "true")
+    dry_run: bool = field(default_factory=lambda: os.getenv("SN_DRY_RUN", "true").lower() == "true")
+
+    def __post_init__(self) -> None:
+        if self.enabled and not self.dry_run and not self.password:
+            raise ConfigValidationError("SN_PASSWORD must be set when SN_ENABLED is true and SN_DRY_RUN is false. (SN_PASSWORD is empty or unset)")
 
     def validate(self) -> None:
         """Fail-closed validation: ensure ServiceNow credentials exist if live dispatch is enabled."""
-        if self.enabled and not self.dry_run:
-            if not self.password or not self.password.strip():
-                raise ValueError(
-                    "Production ServiceNow integration failed closed: SN_PASSWORD is empty or unset. "
-                    "Set SN_PASSWORD in the environment or enable SN_DRY_RUN=true."
-                )
+        self.__post_init__()
 
 @dataclass
 class GuardrailsConfig:
@@ -69,7 +69,12 @@ class GuardrailsConfig:
         "APPS.MSCPDCP_WRAPPER",
         "APPS.KILL_SESSION_WRAPPER",
         "APPS.PIPE_RESET_WRAPPER",
-        "APPS.SNAPSHOT_REFRESH_WRAPPER"
+        "APPS.SNAPSHOT_REFRESH_WRAPPER",
+        "MSC_CL_PULL.PURGE_STAGING_TABLES_SUB",
+        "MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB",
+        "DBMS_PIPE.PURGE",
+        "DBMS_SNAPSHOT.REFRESH",
+        "MSC_CL_EXCHANGE_PARTTN.ALIGN_INDEX_DEFS"
     )
 
 @dataclass
