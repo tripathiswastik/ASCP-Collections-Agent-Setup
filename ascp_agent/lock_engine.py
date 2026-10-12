@@ -78,8 +78,8 @@ class LockDiagnosticsEngine:
     def _init_driver(self):
         """Attempt to load native thin oracledb driver if installed."""
         try:
-            import oracledb
-            self._oracledb = oracledb
+            import importlib
+            self._oracledb = importlib.import_module("oracledb")
         except ImportError:
             self._oracledb = None
         self._async_pool = None
