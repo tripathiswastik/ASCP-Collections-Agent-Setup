@@ -529,6 +529,31 @@ def hitl_gate_node(state: AgentState) -> dict:
 
     # Execute remediation subroutine
     rem_engine = RemediationEngine()
+    rule = HITLGovernanceEngine.evaluate_action_risk(action or "")
+
+    # If dry-run pre-validation is required by governance rule, run it first
+    if rule.requires_dry_run_validation:
+        dry_res = None
+        if action == "KILL_SESSION" and blocker:
+            dry_res = rem_engine.execute_kill_session(blocker["sid"], blocker["serial_number"], blocker.get("object_name", "MSC_ST_DEMANDS"), dry_run=True)
+        elif action in ["PURGE_STAGING", "PURGE_STAGING_NO_VALIDATION"]:
+            instance_id = state.get("context", {}).get("instance_id", 1001)
+            dry_res = rem_engine.execute_purge_staging_no_validation(instance_id=instance_id, dry_run=True)
+        elif action in ["ALIGN_INDEXES", "REBUILD_ALIGN_INDEXES"]:
+            table_name = state.get("context", {}).get("target_staging_table", "MSC_DEMANDS")
+            dry_res = rem_engine.execute_align_indexes(table_name=table_name, dry_run=True)
+        elif action == "RESET_PIPE":
+            instance_code = state.get("context", {}).get("instance_code", "PRD1")
+            dry_res = rem_engine.execute_reset_pipe(pipe_name=f"MSC_PIPE_{instance_code}", dry_run=True)
+
+        if dry_res and not dry_res.success:
+            return {
+                "remediation_approved": True,
+                "is_remediated": False,
+                "remediation_result": vars(dry_res),
+                "messages": [AIMessage(content=f"Dry run pre-validation failed for '{action}': {dry_res.message}. Aborting execution.")]
+            }
+
     if action == "KILL_SESSION":
         sid = blocker["sid"]
         serial = blocker["serial_number"]
@@ -549,11 +574,38 @@ def hitl_gate_node(state: AgentState) -> dict:
             "remediation_result": vars(res),
             "messages": [AIMessage(content=res.message)]
         }
+    elif action == "RESET_PIPE":
+        instance_code = state.get("context", {}).get("instance_code", "PRD1")
+        res = rem_engine.execute_reset_pipe(pipe_name=f"MSC_PIPE_{instance_code}")
+        return {
+            "remediation_approved": True,
+            "is_remediated": True,
+            "remediation_result": vars(res),
+            "messages": [AIMessage(content=res.message)]
+        }
+    elif action in ["ALIGN_INDEXES", "REBUILD_ALIGN_INDEXES"]:
+        table_name = state.get("context", {}).get("target_staging_table", "MSC_DEMANDS")
+        res = rem_engine.execute_align_indexes(table_name=table_name)
+        return {
+            "remediation_approved": True,
+            "is_remediated": True,
+            "remediation_result": vars(res),
+            "messages": [AIMessage(content=res.message)]
+        }
+    elif action in ["RERUN_SNAPSHOT", "RERUN_SNAPSHOT_FAST"]:
+        mview = state.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES")
+        res = rem_engine.execute_snapshot_refresh(mview_name=mview, mode="F")
+        return {
+            "remediation_approved": True,
+            "is_remediated": True,
+            "remediation_result": vars(res),
+            "messages": [AIMessage(content=res.message)]
+        }
 
     return {
         "remediation_approved": True,
-        "is_remediated": True,
-        "messages": [AIMessage(content="Remediation executed successfully.")]
+        "is_remediated": False,
+        "messages": [AIMessage(content=f"Action '{action}' has no executor wired; nothing was run. Escalate to a DBA.")]
     }
 
 def servicenow_node(state: AgentState) -> dict:
@@ -561,14 +613,20 @@ def servicenow_node(state: AgentState) -> dict:
     sn_client = ServiceNowClient()
     incident_payload = sn_client.build_incident_payload_from_state(state)
     incident_res = sn_client.dispatch_incident(incident_payload)
-    recovery_cmd = format_recovery_command_block(instance_id=1001, instance_code="PRD1", validation="N")
+    inst_id = state.get("context", {}).get("instance_id", 1001)
+    inst_code = state.get("context", {}).get("instance_code", "PRD1")
+    recovery_cmd = format_recovery_command_block(instance_id=inst_id, instance_code=inst_code, validation="N")
+
+    status = incident_res.get("status")
+    if status == "FAILED":
+        text = f"ServiceNow dispatch FAILED: {incident_res.get('error', 'Unknown error')}"
+    else:
+        text = f"ServiceNow incident {status or 'CREATED'}: {incident_res.get('incident_number')} (SysID: {incident_res.get('sys_id')}). Automated Recovery Command staged for ST_STATUS reset."
 
     return {
         "servicenow_incident": incident_res,
         "recovery_command": recovery_cmd,
-        "messages": [AIMessage(
-            content=f"ServiceNow Incident enriched & created: {incident_res.get('incident_number')} (SysID: {incident_res.get('sys_id')}). Automated Recovery Command staged for ST_STATUS reset."
-        )]
+        "messages": [AIMessage(content=text)]
     }
 
 # -------------------------------------------------------------

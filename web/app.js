@@ -7,7 +7,12 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // API Security Configuration
-  const API_TOKEN = 'dev-token';
+  // Operator token is entered once per browser session; it is never stored in source.
+  let API_TOKEN = sessionStorage.getItem('ascpToken') || '';
+  if (!API_TOKEN) {
+    API_TOKEN = window.prompt('Enter operator API token') || '';
+    sessionStorage.setItem('ascpToken', API_TOKEN);
+  }
   const apiFetch = (url, options = {}) => {
     const headers = options.headers ? { ...options.headers } : {};
     headers['X-API-Token'] = API_TOKEN;
@@ -873,7 +878,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateMeters() {
     stepMeter.textContent = `${currentSuperStep} / 10`;
-    tokenMeter.textContent = `$${currentTokenSpend.toFixed(3)} / $5.00`;
+    tokenMeter.textContent = `$${currentTokenSpend.toFixed(3)} / $5.00 (illustrative)`;
   }
 
   function addConsoleLog(speaker, text) {

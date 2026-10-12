@@ -42,6 +42,9 @@ class TokenTracker:
             )
 
 _KILL_PATTERN = re.compile(r"^ALTER SYSTEM KILL SESSION '\d+,\d+' IMMEDIATE$")
+_CALL_PATTERN = re.compile(r"^(?:BEGIN|EXEC) ([A-Z0-9_$#.]+)\((.*)\)(?:; END)?$")
+_SAFE_ARGUMENTS = re.compile(r"^[A-Z0-9_$#.,=> ']*$")
+_REGISTRY_RESET_PATTERN = re.compile(r"^UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = \d+$")
 
 class EnterpriseGuardrails:
     """Enforces least-privilege, sanitization, step limits, and cost controls."""
@@ -106,11 +109,11 @@ class EnterpriseGuardrails:
         if _KILL_PATTERN.match(upper):
             return True
 
-        # 3. Allowlisted procedural remediation calls (BEGIN / EXEC)
-        for procedure in self.config.allowed_mutation_procedures:
-            proc_up = procedure.upper()
-            if upper.startswith(f"BEGIN {proc_up}(") or upper.startswith(f"EXEC {proc_up}("):
-                return True
+        if _REGISTRY_RESET_PATTERN.match(upper):
+            return True
+
+        if self._is_allowed_call(upper):
+            return True
 
         # 4. Read-only query validation (SELECT / WITH)
         if upper.startswith(("SELECT ", "WITH ")):
@@ -133,6 +136,15 @@ class EnterpriseGuardrails:
             raise SecurityViolationError("Multiple statements are not allowed.")
 
         raise SecurityViolationError(f"Statement not on the allowlist: {sql_statement[:80]}")
+
+    def _is_allowed_call(self, upper_statement: str) -> bool:
+        """True only for a single allowlisted procedure call with simple literal arguments."""
+        match = _CALL_PATTERN.match(upper_statement)
+        if match is None:
+            return False
+        procedure, arguments = match.group(1), match.group(2)
+        allowed = {name.upper() for name in getattr(self.config, "allowed_mutation_procedures", [])}
+        return procedure in allowed and _SAFE_ARGUMENTS.match(arguments) is not None
 
     def validate_diagnostic_query(self, sql_statement: str, execution_role: str = "SELECT_CATALOG_ROLE") -> bool:
         """Enforces execution boundary for read-only diagnostic telemetry queries.
@@ -211,10 +223,11 @@ class EnterpriseGuardrails:
         if _KILL_PATTERN.match(upper):
             return True
 
-        for procedure in getattr(self.config, "allowed_mutation_procedures", []):
-            proc_up = procedure.upper()
-            if upper.startswith(f"BEGIN {proc_up}(") or upper.startswith(f"EXEC {proc_up}("):
-                return True
+        if _REGISTRY_RESET_PATTERN.match(upper):
+            return True
+
+        if self._is_allowed_call(upper):
+            return True
 
         raise SecurityViolationError(f"Remediation statement not permitted: {sql_statement[:80]}")
 

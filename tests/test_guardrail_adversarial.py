@@ -212,13 +212,19 @@ class TestGuardrailAdversarial(unittest.TestCase):
         h_spoof = DummyHandler(headers={"Referer": "http://127.0.0.1:8085/api/diagnose"})
         self.assertIsNone(h_spoof._authenticate())
 
-        # Case 3: Legitimate token -> accepted
-        h_valid = DummyHandler(headers={"X-API-Token": "dev-token"})
-        self.assertEqual(h_valid._authenticate(), "operator")
+        # Case 3: Legitimate token in header -> accepted when configured
+        import web.server as server_mod
+        orig = server_mod.OPERATOR_TOKENS
+        try:
+            server_mod.OPERATOR_TOKENS = {"dev-token": "operator"}
+            h_valid = DummyHandler(headers={"X-API-Token": "dev-token"})
+            self.assertEqual(h_valid._authenticate(), "operator")
 
-        # Case 4: Query param token -> accepted
-        h_qs = DummyHandler(headers={}, path="/api/diagnose?token=admin-token")
-        self.assertEqual(h_qs._authenticate(), "lead_dba")
+            # Case 4: Query param token -> rejected (header-only auth)
+            h_qs = DummyHandler(headers={}, path="/api/diagnose?token=dev-token")
+            self.assertIsNone(h_qs._authenticate())
+        finally:
+            server_mod.OPERATOR_TOKENS = orig
 
     def test_simultaneous_diagnostic_sessions(self):
         """Simultaneous diagnostic sessions must remain completely isolated without crosstalk."""

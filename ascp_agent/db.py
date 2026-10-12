@@ -18,6 +18,11 @@ from ascp_agent.config import OracleConfig, DEFAULT_CONFIG
 logger = logging.getLogger(__name__)
 
 
+class OracleQueryError(RuntimeError):
+    """Raised when live Oracle database query execution fails."""
+    pass
+
+
 @dataclass
 class QueryResult:
     """Standardized query execution result container."""
@@ -168,23 +173,30 @@ class OracleConnectionPool:
         start_time = time.time()
         params = params or {}
 
-        with self.get_connection() as conn:
-            if conn is not None:
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute(sql, params)
-                    cols = [c[0] for c in cursor.description] if cursor.description else []
-                    rows = cursor.fetchall()
-                    elapsed = (time.time() - start_time) * 1000.0
-                    return QueryResult(
-                        columns=cols,
-                        rows=rows,
-                        row_count=len(rows),
-                        execution_time_ms=round(elapsed, 2),
-                        is_simulated=False
-                    )
-                except Exception as e:
-                    logger.error(f"Live Oracle query execution failed: {e}")
+        if not self.is_simulation:
+            try:
+                with self.get_connection() as conn:
+                    if conn is None:
+                        raise OracleQueryError("Live Oracle database unreachable; no connection available.")
+                    try:
+                        conn.call_timeout = int(timeout_sec * 1000)
+                    except AttributeError:
+                        pass
+                    with conn.cursor() as cursor:
+                        cursor.execute(sql, params)
+                        cols = [c[0] for c in cursor.description] if cursor.description else []
+                        rows = cursor.fetchall()
+                        elapsed = (time.time() - start_time) * 1000.0
+                        return QueryResult(
+                            columns=cols,
+                            rows=rows,
+                            row_count=len(rows),
+                            execution_time_ms=round(elapsed, 2),
+                            is_simulated=False
+                        )
+            except Exception as exc:
+                logger.exception("Live Oracle query failed")
+                raise OracleQueryError("Live Oracle query failed") from exc
 
         # Fallback simulation result
         elapsed = (time.time() - start_time) * 1000.0
@@ -205,23 +217,32 @@ class OracleConnectionPool:
         start_time = time.time()
         params = params or {}
 
-        async with self.get_async_connection() as conn:
-            if conn is not None:
-                try:
+        if not self.is_simulation:
+            try:
+                async with self.get_async_connection() as conn:
+                    if conn is None:
+                        raise OracleQueryError("Live async Oracle database unreachable; no connection available.")
                     cursor = conn.cursor()
-                    await cursor.execute(sql, params)
-                    cols = [c[0] for c in cursor.description] if cursor.description else []
-                    rows = await cursor.fetchall()
-                    elapsed = (time.time() - start_time) * 1000.0
-                    return QueryResult(
-                        columns=cols,
-                        rows=rows,
-                        row_count=len(rows),
-                        execution_time_ms=round(elapsed, 2),
-                        is_simulated=False
-                    )
-                except Exception as e:
-                    logger.error(f"Async Oracle query execution failed: {e}")
+                    try:
+                        await cursor.execute(sql, params)
+                        cols = [c[0] for c in cursor.description] if cursor.description else []
+                        rows = await cursor.fetchall()
+                        elapsed = (time.time() - start_time) * 1000.0
+                        return QueryResult(
+                            columns=cols,
+                            rows=rows,
+                            row_count=len(rows),
+                            execution_time_ms=round(elapsed, 2),
+                            is_simulated=False
+                        )
+                    finally:
+                        if hasattr(cursor, "close"):
+                            res = cursor.close()
+                            if asyncio.iscoroutine(res):
+                                await res
+            except Exception as exc:
+                logger.exception("Live async Oracle query failed")
+                raise OracleQueryError("Live async Oracle query failed") from exc
 
         elapsed = (time.time() - start_time) * 1000.0
         return QueryResult(

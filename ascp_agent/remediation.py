@@ -91,12 +91,17 @@ def format_reset_pipe_sql(instance_code: str = "PRD1") -> str:
     code = _require_identifier(instance_code, "instance_code")
     return f"BEGIN DBMS_PIPE.PURGE('MSC_PIPE_{code}'); END;"
 
+def _validated_mode(mode: str) -> str:
+    """Validate snapshot refresh mode ('F' for fast, 'C' for complete)."""
+    if str(mode).upper() not in ("F", "C"):
+        raise ValueError(f"mode must be 'F' or 'C', got {mode!r}")
+    return str(mode).upper()
+
 def format_snapshot_refresh_sql(mview_name: str, mode: str = "F") -> str:
     """Format standardized snapshot refresh procedure call."""
     mv = _require_identifier(mview_name, "mview_name")
-    if mode.upper() not in ("F", "C"):
-        raise ValueError(f"mode must be 'F' or 'C', got {mode!r}")
-    return f"BEGIN DBMS_SNAPSHOT.REFRESH('{mv}', '{mode.upper()}'); END;"
+    v_mode = _validated_mode(mode)
+    return f"BEGIN DBMS_SNAPSHOT.REFRESH('{mv}', '{v_mode}'); END;"
 
 def format_recovery_command_block(instance_id: int = 1001, instance_code: str = "PRD1", validation: str = "N") -> str:
     """Build complete multi-line automated pipeline recovery command block."""
@@ -141,6 +146,9 @@ class RemediationEngine:
         v_obj = _require_identifier(object_name, "object_name")
 
         # Automatically check rollback volume if not provided
+        if not self.simulated and undo_check is None:
+            raise NotImplementedError("Live undo-volume check not implemented; refusing KILL_SESSION.")
+
         if undo_check is None:
             from ascp_agent.lock_engine import LockDiagnosticsEngine
             engine = LockDiagnosticsEngine()
@@ -253,12 +261,15 @@ class RemediationEngine:
             f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {v_inst}, p_validation => 'N'); END;"
         )
 
+        reset_sql = f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {v_inst}"
+
         if dry_run:
             self.guardrails.validate_sql_command(sql_cmd)
+            self.guardrails.validate_sql_command(reset_sql)
             return RemediationResult(
                 action="PURGE_STAGING_NO_VALIDATION_DRY_RUN",
                 success=True,
-                command_executed=f"-- DRY-RUN: {sql_cmd}",
+                command_executed=f"-- DRY-RUN: {sql_cmd}\n-- DRY-RUN: {reset_sql}",
                 message=f"Dry run validated: verified purge staging no-validation for Instance ID {v_inst}.",
                 target_object="MSC_APPS_INSTANCES / MSC_ST_*",
                 execution_time_ms=round((time.time() - start) * 1000, 2),
@@ -267,13 +278,14 @@ class RemediationEngine:
             )
 
         self._execute(sql_cmd)
+        self._execute(reset_sql)
         elapsed = (time.time() - start) * 1000
         prefix = "[SIMULATED] " if self.simulated else ""
 
         return RemediationResult(
             action="PURGE_STAGING_NO_VALIDATION",
             success=True,
-            command_executed=sql_cmd,
+            command_executed=f"{sql_cmd}\n{reset_sql}",
             message=f"{prefix}Executed Purge Staging Tables with Validation = No. MSC_ST_* cleared and MSC_APPS_INSTANCES.ST_STATUS normalized to 0.",
             target_object="MSC_APPS_INSTANCES / MSC_ST_*",
             execution_time_ms=round(elapsed, 2),
@@ -329,7 +341,7 @@ class RemediationEngine:
         """Invokes DBMS_SNAPSHOT.REFRESH in fast ('F') or complete ('C') mode."""
         start = time.time()
         v_mv = _require_identifier(mview_name, "mview_name")
-        v_mode = "C" if str(mode).upper() == "C" else "F"
+        v_mode = _validated_mode(mode)
         sql_cmd = f"BEGIN DBMS_SNAPSHOT.REFRESH('{v_mv}', '{v_mode}'); END;"
 
         if dry_run:

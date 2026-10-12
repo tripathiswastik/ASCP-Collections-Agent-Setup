@@ -99,7 +99,7 @@ class HITLGovernanceEngine:
         - High-risk or destructive actions (KILL_SESSION, CMCLEAN_EXEC) must invoke interrupt() for DBA sign-off.
         """
         rule = HITLGovernanceEngine.evaluate_action_risk(action)
-        if rule.risk_tier == "HIGH" or action in ["KILL_SESSION", "CMCLEAN_EXEC"]:
+        if rule.requires_mandatory_approval or rule.risk_tier == "HIGH":
             return "MANDATORY_HITL_INTERRUPT"
         if rule.risk_tier == "LOW" and confidence_score >= 85.0:
             return "AUTOMATED_SERVICENOW_DISPATCH"

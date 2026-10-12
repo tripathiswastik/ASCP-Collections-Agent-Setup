@@ -21,9 +21,12 @@ except ImportError:
     pytest = _PytestShim()
 
 from ascp_agent.config import OracleConfig, ServiceNowConfig
+from ascp_agent.graph import hitl_gate_node
 from ascp_agent.guardrails import EnterpriseGuardrails, SecurityViolationError
+from ascp_agent.hitl_governance import HITLGovernanceEngine
 from ascp_agent.itsm_service_now import ServiceNowClient
-from ascp_agent.remediation import format_kill_session_sql, format_snapshot_refresh_sql
+from ascp_agent.remediation import RemediationEngine, format_kill_session_sql, format_snapshot_refresh_sql
+from ascp_agent.state import DiagnosticState
 from web.server import resolve_static_path
 
 
@@ -91,6 +94,89 @@ def test_dispatch_reports_failed_not_simulated():
     assert result["status"] == "FAILED"
 
 
+def test_guardrail_blocks_piggybacked_plsql():
+    sql = "BEGIN DBMS_PIPE.PURGE('X'); EXECUTE IMMEDIATE 'DROP USER SCOTT CASCADE'; END;"
+    with pytest.raises(SecurityViolationError):
+        EnterpriseGuardrails().validate_sql_command(sql)
+
+
+def test_guardrail_allows_exact_purge_call():
+    sql = "BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => 1001, p_validation => 'N'); END;"
+    assert EnterpriseGuardrails().validate_sql_command(sql) is True
+
+
+def test_mandatory_approval_actions_never_auto_execute():
+    assert HITLGovernanceEngine.evaluate_governance_routing("RESET_PIPE", 99.0) == "MANDATORY_HITL_INTERRUPT"
+
+
+def test_unwired_action_does_not_report_success():
+    state = DiagnosticState({
+        "remediation_action": "CMCLEAN_EXEC", "confidence_score": 95.0, "risk_level": "HIGH",
+        "remediation_approved": True, "human_response": {"approved": True, "dba_user": "alice"},
+    })
+    result = hitl_gate_node(state)
+    assert result["is_remediated"] is False
+    assert "nothing was run" in result["messages"][0].content
+
+
+def test_purge_no_validation_runs_registry_reset():
+    result = RemediationEngine().execute_purge_staging_no_validation(1001)
+    assert "UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0" in result.command_executed
+    assert result.audit_record["normalized_st_status"] == 0
+
+
+def test_server_has_no_default_tokens(monkeypatch=None):
+    if monkeypatch:
+        monkeypatch.delenv("ASCP_OPERATOR_TOKENS", raising=False)
+        import importlib
+        import web.server as server
+        importlib.reload(server)
+        assert server.OPERATOR_TOKENS == {}
+    else:
+        orig = os.environ.get("ASCP_OPERATOR_TOKENS")
+        try:
+            os.environ.pop("ASCP_OPERATOR_TOKENS", None)
+            import importlib
+            import web.server as server
+            importlib.reload(server)
+            assert server.OPERATOR_TOKENS == {}
+        finally:
+            if orig is not None:
+                os.environ["ASCP_OPERATOR_TOKENS"] = orig
+            else:
+                os.environ.pop("ASCP_OPERATOR_TOKENS", None)
+
+
+def test_undo_check_is_not_a_stub_in_live_mode():
+    engine = RemediationEngine(connection_config=type("Cfg", (), {"use_simulation": False})())
+    with pytest.raises(NotImplementedError):
+        engine.execute_kill_session(412, 28419, "MSC_ST_DEMANDS")
+
+
+def test_query_failure_is_not_masked_as_simulation(monkeypatch=None):
+    from ascp_agent.db import OracleConnectionPool
+    pool = OracleConnectionPool()
+    if monkeypatch:
+        monkeypatch.setattr(OracleConnectionPool, "is_simulation", property(lambda self: False))
+        monkeypatch.setattr(pool, "get_connection", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+        with pytest.raises(Exception):
+            pool.execute_query("SELECT 1 FROM DUAL")
+    else:
+        orig_is_sim = OracleConnectionPool.is_simulation
+        orig_get_conn = pool.get_connection
+        try:
+            OracleConnectionPool.is_simulation = property(lambda self: False)
+            def _failing_conn():
+                raise RuntimeError("db down")
+                yield
+            pool.get_connection = _failing_conn
+            with pytest.raises(Exception):
+                pool.execute_query("SELECT 1 FROM DUAL")
+        finally:
+            OracleConnectionPool.is_simulation = orig_is_sim
+            pool.get_connection = orig_get_conn
+
+
 class TestSecurityFixes(unittest.TestCase):
     def test_kill_sql_normal_input(self):
         test_kill_sql_normal_input()
@@ -115,3 +201,27 @@ class TestSecurityFixes(unittest.TestCase):
 
     def test_dispatch_reports_failed_not_simulated(self):
         test_dispatch_reports_failed_not_simulated()
+
+    def test_guardrail_blocks_piggybacked_plsql(self):
+        test_guardrail_blocks_piggybacked_plsql()
+
+    def test_guardrail_allows_exact_purge_call(self):
+        test_guardrail_allows_exact_purge_call()
+
+    def test_mandatory_approval_actions_never_auto_execute(self):
+        test_mandatory_approval_actions_never_auto_execute()
+
+    def test_unwired_action_does_not_report_success(self):
+        test_unwired_action_does_not_report_success()
+
+    def test_purge_no_validation_runs_registry_reset(self):
+        test_purge_no_validation_runs_registry_reset()
+
+    def test_server_has_no_default_tokens(self):
+        test_server_has_no_default_tokens()
+
+    def test_undo_check_is_not_a_stub_in_live_mode(self):
+        test_undo_check_is_not_a_stub_in_live_mode()
+
+    def test_query_failure_is_not_masked_as_simulation(self):
+        test_query_failure_is_not_masked_as_simulation()

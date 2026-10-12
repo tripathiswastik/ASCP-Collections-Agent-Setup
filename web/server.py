@@ -15,6 +15,7 @@ import urllib.parse
 import hmac
 import uuid
 import time
+import logging
 from typing import Dict, Any, Optional
 
 # Add parent directory to sys.path
@@ -33,24 +34,8 @@ from ascp_agent.simulator import SCENARIOS
 PUBLIC_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = PUBLIC_DIR
 
-# Environment and secure token configuration
-ASCP_ENV = os.environ.get("ASCP_ENV", "development").strip().lower()
-_RAW_TOKENS = os.environ.get("ASCP_OPERATOR_TOKENS")
-
-if _RAW_TOKENS:
-    try:
-        OPERATOR_TOKENS: Dict[str, str] = json.loads(_RAW_TOKENS)
-    except Exception as exc:
-        raise RuntimeError(f"FATAL: ASCP_OPERATOR_TOKENS must be valid JSON: {exc}")
-elif ASCP_ENV == "development":
-    # Development mode only: predefined default tokens
-    OPERATOR_TOKENS: Dict[str, str] = {"dev-token": "operator", "admin-token": "lead_dba"}
-else:
-    # Fail fast outside development if tokens are unconfigured
-    raise RuntimeError(
-        "FATAL: ASCP_OPERATOR_TOKENS must be configured in environment outside development (ASCP_ENV != 'development'). "
-        "Server startup halted to prevent unauthenticated access."
-    )
+# JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
+OPERATOR_TOKENS: Dict[str, str] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
 
 # Concurrency & request safety limits
 MAX_BODY_BYTES = 64 * 1024
@@ -105,13 +90,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(request, client_address, server)
 
     def _authenticate(self) -> Optional[str]:
-        """Return the operator name for a valid X-API-Token header or token query parameter, else None."""
+        """Return the operator name for a valid X-API-Token header, else None."""
         supplied = self.headers.get("X-API-Token", "").strip()
-        if not supplied:
-            parsed = urllib.parse.urlparse(self.path)
-            qs = urllib.parse.parse_qs(parsed.query)
-            supplied = qs.get("token", [""])[0] or qs.get("api_key", [""])[0]
-
         if not supplied:
             return None
         supplied_bytes = supplied.encode("utf-8")
@@ -175,7 +155,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 "registry": vars(registry),
                 "stages": stages,
                 "quarantine_records": quarantine,
-                "is_simulation": True
+                "is_simulation": getattr(monitor, "simulated", True)
             })
 
         elif path == "/api/scenarios":
@@ -404,7 +384,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                             config={"configurable": {"thread_id": thread_id}}
                         )
             except Exception as exc:
-                self._send_json({"error": f"Diagnostic Agent execution error: {str(exc)}"}, 500)
+                logging.exception("Diagnostic Agent execution error: %s", exc)
+                self._send_json({"error": "Diagnostic Agent execution failed. Check server logs."}, 500)
                 return
 
             if state.get("interrupted") and state.get("interrupt_payload"):
@@ -437,6 +418,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def run_server(port: int = 8085):
+    if not OPERATOR_TOKENS:
+        raise SystemExit('ASCP_OPERATOR_TOKENS is not set. Example: {"<long-random-token>": "alice"}')
     with ThreadedASCPDiagnosticServer(("127.0.0.1", port), ASCPDiagnosticHandler) as httpd:
         print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://127.0.0.1:{port}")
         httpd.serve_forever()
