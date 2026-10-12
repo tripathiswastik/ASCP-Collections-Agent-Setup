@@ -70,7 +70,7 @@ When all pull workers terminate successfully, the parent request set **Planning 
   Allocates up to **25 parallel workers** handling transformation tasks across concurrent execution threads.
 * **Global Surrogate Key Resolution**:
   In multi-source deployments, natural business keys (Item Number, Organization, Routing Step, Vendor Site) are translated into globally unique surrogate keys:
-  $$\text{Global Surrogate ID} = f(\text{Source Business Key}, \text{instance\_id})$$
+  $$\text{Global Surrogate ID} = f(\text{Source Business Key}, \text{Instance ID})$$
   Generated keys are reused across cycles to preserve relational integrity.
 * **Validation & Error Tracking (`PROCESS_STATUS` / `ERR_CODE`)**:
   Staging rows undergo inline business rule validation inside `MSC_ST_%`:
@@ -93,8 +93,8 @@ The final phase executes **Planning Data Collection - Purge Staging Tables (MSCP
 #### Collection Stage Technical Summary
 | Collection Stage | Parent Program | Sub-Processes & Workers | Source-to-Target Schemas | Primary Technical Objective |
 |---|---|---|---|---|
-| **Stage 1: Planning Data Pull** | `MSCPDP` | `MSRFWOR`, `MSCPDPW` (1–35 workers) | ADS (`MLOG$_` MVs) $\rightarrow$ `MSC_ST_%` via DB Links | Delta/Complete extraction from source MVs into interface staging tables over `DBMS_PIPE`. |
-| **Stage 2: Planning ODS Load** | `MSCPDC` | `MSCPDCW` (1–25 workers) | `MSC_ST_%` $\rightarrow$ `MSC_%` (`plan_id = -1`) | Business key translation, global surrogate ID generation, row validation, and core ODS population. |
+| **Stage 1: Planning Data Pull** | `MSCPDP` | `MSRFWOR`, `MSCPDPW` (1–35 workers) | ADS (`MLOG$_` MVs) &rarr; `MSC_ST_%` via DB Links | Delta/Complete extraction from source MVs into interface staging tables over `DBMS_PIPE`. |
+| **Stage 2: Planning ODS Load** | `MSCPDC` | `MSCPDCW` (1–25 workers) | `MSC_ST_%` &rarr; `MSC_%` (`plan_id = -1`) | Business key translation, global surrogate ID generation, row validation, and core ODS population. |
 | **Stage 3: Purge Staging** | `MSCPDCP` | `MSCPDCP` process | `MSC_ST_%` (Cleansed / Truncated) | Truncate interface tables to prevent surrogate key collisions and lock contention on future runs. |
 
 ---
@@ -339,7 +339,7 @@ Remediation requires clearing orphan worker sessions via OS PID / `ALTER SYSTEM 
 **Answer:**
 If `MSCPDCP` fails or is omitted, legacy unpurged records remain in `MSC_ST_%` interface tables. When a subsequent collection runs, Stage 1 pull workers append newly extracted operational rows alongside residual rows.
 During Stage 2 ODS Load (`MSCPDC`), surrogate key assignment routines evaluate natural business keys to generate planning surrogates:
-$$\text{Global Surrogate ID} = f(\text{Source Business Key}, \text{instance\_id})$$
+$$\text{Global Surrogate ID} = f(\text{Source Business Key}, \text{Instance ID})$$
 Duplicate natural keys across stale and newly extracted rows violate unique constraints on surrogate mapping structures (`MSC_MAPPING_CLAUSES`), triggering `ORA-00001: unique constraint violated` and halting Stage 2.
 
 ---
@@ -389,11 +389,11 @@ $$\text{Prompt} = \mathcal{P}_{\text{Role}} + \mathcal{C}_{\text{Domain}} + \mat
 ```
 
 #### Diagnostic Confidence Weighted Model
-$$C_{\text{diag}} = 0.4 \cdot S_{\text{error\_code}} + 0.4 \cdot S_{\text{trace\_match}} + 0.2 \cdot S_{\text{state\_consistency}}$$
+$$C_{\text{diag}} = 0.4 \cdot S_{\text{err}} + 0.4 \cdot S_{\text{trace}} + 0.2 \cdot S_{\text{state}}$$
 
-* $S_{\text{error\_code}} \in [0, 1]$: Certainty of the primary Oracle error signature (`ORA-00054`, `ORA-14098`, `ORA-00001`).
-* $S_{\text{trace\_match}} \in [0, 1]$: Drain log template alignment against known failure catalogs.
-* $S_{\text{state\_consistency}} \in [0, 1]$: Corroboration between database performance views (`V$SESSION`, `V$LOCKED_OBJECT`) and log timestamps.
+* $S_{\text{err}} \in [0, 1]$: Certainty of the primary Oracle error signature (`ORA-00054`, `ORA-14098`, `ORA-00001`).
+* $S_{\text{trace}} \in [0, 1]$: Drain log template alignment against known failure catalogs.
+* $S_{\text{state}} \in [0, 1]$: Corroboration between database performance views (`V$SESSION`, `V$LOCKED_OBJECT`) and log timestamps.
 
 ---
 
