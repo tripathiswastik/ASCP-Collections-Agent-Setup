@@ -1,0 +1,13 @@
++---------------------------------------------------------------------------+
+Application Object Library: Version : 12.2.8
+Program: MSCPDPW : Planning Data Pull Worker
+Request ID: 890412
+Date: 12-OCT-2025 04:12:00
++---------------------------------------------------------------------------+
+[12-OCT-2025 04:12:01]: Worker 1 initialized. Instance PRD1 (1001).
+[12-OCT-2025 04:12:03]: Processing entity: SALES_ORDERS -> MSC_ST_DEMANDS
+[12-OCT-2025 04:12:05]: Cause: ORA-00054: resource busy and acquire with NOWAIT specified on table MSC_ST_DEMANDS.
+[12-OCT-2025 04:12:06]: Action: Contact DBA to verify blocking locks on staging tables.
+[12-OCT-2025 04:12:10]: Worker process 31902 terminated with fatal error status.
++---------------------------------------------------------------------------+
+Concurrent request completed with error.

@@ -1,0 +1,13 @@
++---------------------------------------------------------------------------+
+Application Object Library: Version : 12.2.8
+Program: MSCPDCW : Planning ODS Load Worker
+Request ID: 890415
+Date: 12-OCT-2025 05:01:00
++---------------------------------------------------------------------------+
+[12-OCT-2025 05:01:10]: Worker 2 started ODS transformation.
+[12-OCT-2025 05:01:22]: Beginning global surrogate key resolution for Instance PRD1 (1001).
+[12-OCT-2025 05:01:45]: Cause: ORA-00001: unique constraint (MSC.MSC_MAPPING_CLAUSES_U1) violated during ODS Load.
+[12-OCT-2025 05:01:46]: Collision on natural key (INVENTORY_ITEM_ID: 10492, ORG_ID: 204).
+[12-OCT-2025 05:01:50]: Error in package MSC_CL_COLLECTION.LOAD_DEMANDS.
++---------------------------------------------------------------------------+
+Concurrent request completed with error.

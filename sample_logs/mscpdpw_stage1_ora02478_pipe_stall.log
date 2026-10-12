@@ -1,0 +1,12 @@
++---------------------------------------------------------------------------+
+Application Object Library: Version : 12.2.8
+Program: MSCPDPW : Planning Data Pull Worker
+Request ID: 890425
+Date: 12-OCT-2025 02:40:00
++---------------------------------------------------------------------------+
+[12-OCT-2025 02:40:11]: MSCPDPW Worker 4 inserting into MSC_ST_SUPPLIES.
+[12-OCT-2025 02:42:01]: Cause: ORA-02478: maxextents reached for segment in tablespace APPS_TS_MEDIA.
+[12-OCT-2025 02:42:05]: Worker OS PID 41920 terminated abnormally without pipe signal.
+[12-OCT-2025 02:45:00]: Parent MSCPDP blocked in DBMS_PIPE.RECEIVE_MESSAGE('MSC_PIPE_1001').
++---------------------------------------------------------------------------+
+Concurrent request completed with error.

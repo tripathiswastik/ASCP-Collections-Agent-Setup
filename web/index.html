@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Autonomous ASCP Collections Diagnostic Agent | Oracle EBS & APS Control Plane</title>
+  <meta name="description" content="Autonomous Control Plane & Diagnostic Agent for Oracle Advanced Supply Chain Planning (ASCP) Collections. Real-time lock introspection, Drain log parsing, and LangGraph HITL governance.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+  <!-- Top Navigation Bar -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo-group">
+        <div class="logo-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="logo-title">ASCP Autonomous Control Plane</h1>
+          <span class="logo-subtitle">Oracle EBS Dual-Stage ETL Diagnostic Agent</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- System Telemetry Status Badges -->
+    <div class="header-center">
+      <div class="status-pill" id="stStatusPill">
+        <span class="pulse-dot stalled"></span>
+        <span class="pill-label">ST_STATUS:</span>
+        <strong id="stStatusText">LOAD_PROCESSING (2)</strong>
+      </div>
+      <div class="status-pill">
+        <span class="pill-label">Instance:</span>
+        <strong>PRD1 (1001)</strong>
+      </div>
+      <div class="status-pill">
+        <span class="pill-label">Topology:</span>
+        <strong id="topologyText">Centralized (DB Link)</strong>
+      </div>
+    </div>
+
+    <!-- Scenario Switcher -->
+    <div class="header-right">
+      <label for="scenarioSelector" class="selector-label">Failure Scenario:</label>
+      <select id="scenarioSelector" class="scenario-dropdown">
+        <!-- Populated dynamically via JS -->
+      </select>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="dashboard-container">
+    <!-- Row 1: Dual-Stage Architecture Pipeline Visualizer -->
+    <section class="panel etl-panel">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="panel-badge">Dual-Stage ETL Topology</span>
+          <h2>Collections Execution Flow (ADS &rarr; ODS &rarr; PDS)</h2>
+        </div>
+        <div class="panel-actions">
+          <span class="sync-indicator"><span class="pulse-dot green"></span> Live Introspection Active</span>
+        </div>
+      </div>
+
+      <div class="etl-pipeline-grid">
+        <!-- Stage 0: Transactional Source -->
+        <div class="etl-stage-card" id="stageCardSource">
+          <div class="stage-tag">Transactional Source ERP</div>
+          <h3>Application Data Store (ADS)</h3>
+          <p class="stage-desc">Live Sales Orders, POs, On-Hand Inventory</p>
+          <div class="stage-meta">
+            <div class="meta-row"><span>Refresh Subroutine:</span> <code>MSRFWOR</code></div>
+            <div class="meta-row"><span>Snapshot Logs:</span> <code>MLOG$_OE_ORDER_LINES</code></div>
+            <div class="meta-row"><span>Mode:</span> <span class="badge blue">DBMS_SNAPSHOT ('F'/'C')</span></div>
+          </div>
+          <div class="stage-status-foot success">Operational</div>
+        </div>
+
+        <div class="pipeline-connector">
+          <div class="connector-line"></div>
+          <div class="connector-arrow">&rarr;</div>
+          <span class="connector-label">DB Link / Extraction (MSCPDPW via DBMS_PIPE)</span>
+        </div>
+
+        <!-- Stage 1: Central Planning Staging -->
+        <div class="etl-stage-card" id="stageCardStage1">
+          <div class="stage-tag">Stage 1: Interface Layer</div>
+          <h3>Staging Tables (MSC_ST_*)</h3>
+          <p class="stage-desc">Raw Operations Ingestion &amp; Quarantine</p>
+          <div class="stage-meta">
+            <div class="meta-row"><span>Parent Process:</span> <code>MSCPDP (Pull)</code></div>
+            <div class="meta-row"><span>Active Targets:</span> <code>MSC_ST_DEMANDS</code></div>
+            <div class="meta-row"><span>Records Staged:</span> <strong id="stage1Count">584,900</strong></div>
+          </div>
+          <div class="stage-status-foot success" id="stage1Foot">Extraction Complete</div>
+        </div>
+
+        <div class="pipeline-connector">
+          <div class="connector-line warning"></div>
+          <div class="connector-arrow">&rarr;</div>
+          <span class="connector-label">MSCPDC / MSCPDCW (Surrogate Key Mapping)</span>
+        </div>
+
+        <!-- Stage 2: Operational Data Store -->
+        <div class="etl-stage-card active-blocked" id="stageCardStage2">
+          <div class="stage-tag alert">Stage 2: Operational Data Store</div>
+          <h3>Central ODS (MSC_*, plan_id = -1)</h3>
+          <p class="stage-desc">Unified Enterprise Planning Schema</p>
+          <div class="stage-meta">
+            <div class="meta-row"><span>Parent Process:</span> <code>MSCPDC (ODS Load)</code></div>
+            <div class="meta-row"><span>Inline Validation:</span> <code>ERR_CODE, PROCESS_STATUS</code></div>
+            <div class="meta-row"><span>Loaded Records:</span> <strong id="stage2Count">210,400</strong></div>
+          </div>
+          <div class="stage-status-foot error" id="stage2Foot">STALLED (Mode 6 Lock)</div>
+        </div>
+
+        <div class="pipeline-connector">
+          <div class="connector-line"></div>
+          <div class="connector-arrow">&rarr;</div>
+          <span class="connector-label">MSCPDCP (Purge Maintenance)</span>
+        </div>
+
+        <!-- Stage 3: Planning Data Store -->
+        <div class="etl-stage-card" id="stageCardStage3">
+          <div class="stage-tag">Stage 3: Advanced Planning</div>
+          <h3>Planning Data Store (PDS, plan_id &gt; 0)</h3>
+          <p class="stage-desc">ASCP Optimization Engines &amp; Tactical Models</p>
+          <div class="stage-meta">
+            <div class="meta-row"><span>Engine:</span> <code>MSRCS</code></div>
+            <div class="meta-row"><span>Plan Status:</span> <code>BLOCKED_WAITING_ODS</code></div>
+            <div class="meta-row"><span>Horizon:</span> <strong>180 Days</strong></div>
+          </div>
+          <div class="stage-status-foot pending" id="stage3Foot">Pending ODS Load</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 2: Control Plane & Diagnostics Grid -->
+    <div class="dashboard-split-grid">
+      <!-- Left Column: LangGraph Agent Control Plane & Reasoning Trace -->
+      <section class="panel agent-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-badge purple">LangGraph State Machine</span>
+            <h2>Autonomous Diagnostic Agent</h2>
+          </div>
+          <div class="guardrail-meters">
+            <div class="meter-pill" title="Diagnostic Confidence Score">
+              <span>Confidence:</span> <strong id="confidenceMeter">96.5%</strong>
+            </div>
+            <div class="meter-pill" title="Execution Cap: Max 10 Super-Steps">
+              <span>Steps:</span> <strong id="stepMeter">2 / 10</strong>
+            </div>
+            <div class="meter-pill" title="Hard Dollar Token Spend Cap: $5.00">
+              <span>Spend:</span> <strong id="tokenMeter">$0.003 / $5.00</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6-Node Graph Topology Visualizer -->
+        <div class="graph-nodes-visualizer">
+          <div class="graph-node-pill active" id="nodeIngestion" title="Step 1: Drain Log Parsing Tree">
+            <div class="node-icon">🌲</div>
+            <span>1. log_ingestion</span>
+          </div>
+          <span class="node-arrow">&rarr;</span>
+          <div class="graph-node-pill active" id="nodeClassification" title="Step 2: Failure Domain Routing">
+            <div class="node-icon">🔀</div>
+            <span>2. classification</span>
+          </div>
+          <span class="node-arrow">&rarr;</span>
+          <div class="graph-node-pill active" id="nodeLock" title="Step 3: Hierarchical Lock Introspection">
+            <div class="node-icon">🔒</div>
+            <span>3. oracle_lock</span>
+          </div>
+          <span class="node-arrow">&rarr;</span>
+          <div class="graph-node-pill" id="nodeRca" title="Step 4: ReAct Synthesis & Confidence Scoring">
+            <div class="node-icon">🧠</div>
+            <span>4. rca_hypothesis</span>
+          </div>
+          <span class="node-arrow">&rarr;</span>
+          <div class="graph-node-pill hitl-gate" id="nodeHitl" title="Step 5: HITL Gate (Confidence < 85%)">
+            <div class="node-icon">🛡️</div>
+            <span>5. hitl_gate</span>
+          </div>
+          <span class="node-arrow">&rarr;</span>
+          <div class="graph-node-pill" id="nodeServiceNow" title="Step 6: ServiceNow REST Enrichment">
+            <div class="node-icon">📋</div>
+            <span>6. servicenow</span>
+          </div>
+        </div>
+
+        <!-- Agent Reasoning Log Console -->
+        <div class="agent-console-box">
+          <div class="console-top-bar">
+            <span>Autonomous Reasoning Stream &amp; Audit Trail</span>
+            <button class="btn-sm btn-ghost" id="btnClearConsole">Clear Trace</button>
+          </div>
+          <div class="console-body" id="agentConsoleBody">
+            <div class="console-log-item info">
+              <span class="log-time">[22:08:00]</span>
+              <span class="log-speaker">[CONTROL PLANE]</span>
+              <span>Loaded scenario: Mode 6 Exclusive lock detected on staging table MSC_ST_DEMANDS.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Control Action Bar -->
+        <div class="agent-control-bar">
+          <button class="btn btn-primary" id="btnRunDiagnosis">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Run Autonomous Diagnosis
+          </button>
+          <button class="btn btn-secondary" id="btnDrainParseOnly">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            Tokenize Logs with Drain
+          </button>
+        </div>
+      </section>
+
+      <!-- Right Column: Oracle Dynamic Performance View Introspection -->
+      <section class="panel lock-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-badge orange">Oracle Dynamic Performance Views</span>
+            <h2>Hierarchical Root Blocker Introspection</h2>
+          </div>
+          <span class="sql-badge">CONNECT BY PRIOR s.sid = s.blocking_session</span>
+        </div>
+
+        <!-- Lock Hierarchy Tree Container -->
+        <div class="lock-hierarchy-container" id="lockTreeContainer">
+          <!-- Populated dynamically via JS -->
+        </div>
+
+        <!-- Enqueue Lock Mode Legend -->
+        <div class="lock-mode-legend">
+          <h4>Oracle Enqueue Lock Modes (V$LOCKED_OBJECT):</h4>
+          <div class="mode-chips">
+            <span class="mode-chip"><strong>Mode 0:</strong> NONE (Waiting)</span>
+            <span class="mode-chip"><strong>Mode 2:</strong> ROWS_S (Row Share)</span>
+            <span class="mode-chip"><strong>Mode 3:</strong> ROW_X (Row Exclusive)</span>
+            <span class="mode-chip"><strong>Mode 4:</strong> SHARE (Share Table)</span>
+            <span class="mode-chip danger"><strong>Mode 6:</strong> Exclusive (X) &mdash; Blocks MSCPDCP / Workers</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Row 3: Drain Log Parser & ServiceNow ITSM Integration Split -->
+    <div class="dashboard-split-grid bottom-row">
+      <!-- Drain Algorithm Parser Studio -->
+      <section class="panel drain-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-badge cyan">Drain Algorithmic Engine</span>
+            <h2>Structured Log Templates &amp; Parameter Vectors</h2>
+          </div>
+          <span class="tree-depth-label">Fixed-Depth Parse Tree (Depth: 4)</span>
+        </div>
+
+        <div class="drain-output-box" id="drainResultsContainer">
+          <!-- Parsed clusters populated dynamically -->
+        </div>
+      </section>
+
+      <!-- ServiceNow ITSM Audit & Ticket Viewer -->
+      <section class="panel itsm-panel">
+        <div class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-badge green">ITSM ServiceNow Integration</span>
+            <h2>Auditable Incident Dispatch (REST API)</h2>
+          </div>
+          <span class="itsm-endpoint">POST /api/now/table/incident</span>
+        </div>
+
+        <div class="itsm-ticket-card" id="itsmTicketCard">
+          <div class="ticket-header-row">
+            <div class="ticket-id-badge" id="ticketNumber">INC084192</div>
+            <div class="ticket-urgency">Impact: 2 | Urgency: 2 | Group: Database Administration</div>
+          </div>
+          <h3 class="ticket-title" id="ticketShortDesc">AUTONOMOUS DIAGNOSTIC REPORT: ASCP Collection Stage 2 Lock Blockage</h3>
+          <p class="ticket-body" id="ticketBody">
+            Autonomous ASCP Diagnostic Agent detected Mode 6 Exclusive lock on staging table MSC_ST_DEMANDS.
+          </p>
+          <div class="json-viewer-header">
+            <span>Structured Payload (u_diagnostic_payload):</span>
+            <button class="btn-xs btn-ghost" id="btnCopyJson">Copy JSON</button>
+          </div>
+          <pre class="json-viewer" id="ticketJsonPreview"></pre>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Human-in-the-Loop (HITL) Governance Gate Modal -->
+  <div class="modal-overlay hidden" id="hitlModal">
+    <div class="modal-card">
+      <div class="modal-top">
+        <div class="modal-badge danger">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          MANDATORY HUMAN-IN-THE-LOOP (HITL) APPROVAL GATE
+        </div>
+        <button class="modal-close-btn" id="btnCloseModal">&times;</button>
+      </div>
+
+      <div class="modal-content">
+        <h3>Proposed High-Risk Remediation Action</h3>
+        <p class="modal-desc">
+          The autonomous control plane requires explicit DBA sign-off before executing session termination or table modification.
+        </p>
+
+        <div class="approval-details-grid">
+          <div class="detail-item">
+            <label>Target Action</label>
+            <strong id="modalActionName">KILL_SESSION</strong>
+          </div>
+          <div class="detail-item">
+            <label>Risk Tier</label>
+            <span class="badge red" id="modalRiskTier">HIGH RISK</span>
+          </div>
+          <div class="detail-item">
+            <label>Target Object</label>
+            <code id="modalTargetObject">MSC_ST_DEMANDS</code>
+          </div>
+          <div class="detail-item">
+            <label>Target Session</label>
+            <strong id="modalSessionInfo">SID 412 (SERIAL# 28419)</strong>
+          </div>
+        </div>
+
+        <div class="command-preview-box">
+          <label>Proposed Database Command (Least-Privilege Wrapper):</label>
+          <code id="modalSqlPreview">ALTER SYSTEM KILL SESSION '412,28419' IMMEDIATE;</code>
+        </div>
+
+        <div class="modal-reasoning">
+          <strong>Agent Hypothesis Trace:</strong>
+          <p id="modalReasoningTrace">
+            Session 412 holds an uncommitted Exclusive lock acquired during manual maintenance, blocking MSCPDCW workers.
+          </p>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-danger-outline" id="btnRejectAction">Reject &amp; Abort</button>
+        <button class="btn btn-success" id="btnApproveAction">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          Approve &amp; Execute Remediation
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

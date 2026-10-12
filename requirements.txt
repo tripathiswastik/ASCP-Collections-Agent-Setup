@@ -1,0 +1,11 @@
+# Requirements for Autonomous ASCP Collections Diagnostic Agent
+# Note: Core agent runs zero-dependency with Python 3.7+ standard library + typing_extensions.
+# Optional production packages:
+typing_extensions>=4.7.0
+requests>=2.28.0
+
+# Optional Database & LLM packages for live Oracle EBS & LangGraph production deployment:
+# oracledb>=2.0.0
+# langgraph>=0.2.0
+# langchain-core>=0.3.0
+# psycopg2-binary>=2.9.0

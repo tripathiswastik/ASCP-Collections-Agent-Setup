@@ -1,0 +1,12 @@
++---------------------------------------------------------------------------+
+Application Object Library: Version : 12.2.8
+Program: MSCPDP : Planning Data Pull (Parent)
+Request ID: 890422
+Date: 12-OCT-2025 03:00:00
++---------------------------------------------------------------------------+
+[12-OCT-2025 03:00:15]: Spawning MSRFWOR: Refresh Collection Snapshots on transactional source ERP.
+[12-OCT-2025 03:04:22]: Cause: ORA-12571: TNS:packet writer failure on db link TO_EBS_SOURCE.
+[12-OCT-2025 03:04:25]: DBMS_SNAPSHOT.REFRESH failed for MLOG$_OE_ORDER_LINES_ALL.
+[12-OCT-2025 03:04:30]: Planning Data Pull aborted during Phase 1 extraction.
++---------------------------------------------------------------------------+
+Concurrent request completed with error.
