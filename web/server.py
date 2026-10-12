@@ -283,12 +283,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "Endpoint not found"}, 404)
 
 
-def run_server(port: int = 8080):
+def run_server(port: int = 8085):
     with ThreadedASCPDiagnosticServer(("127.0.0.1", port), ASCPDiagnosticHandler) as httpd:
         print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://127.0.0.1:{port}")
         httpd.serve_forever()
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("PORT", "8085"))
     run_server(port)
