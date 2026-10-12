@@ -17,6 +17,11 @@ class OracleConfig:
     service_name: str = field(default_factory=lambda: os.getenv("ORACLE_SERVICE", "EBSPROD"))
     username: str = field(default_factory=lambda: os.getenv("ORACLE_USER", "APPS_DIAG"))
     password: str = field(default_factory=lambda: os.getenv("ORACLE_PASSWORD", ""), repr=False)
+    diagnostic_role: str = "SELECT_CATALOG_ROLE"
+    # Principle of Least Privilege: Separate remediation credentials
+    remediation_username: str = field(default_factory=lambda: os.getenv("ORACLE_REMEDIATION_USER", "APPS_REMEDIATE"))
+    remediation_password: str = field(default_factory=lambda: os.getenv("ORACLE_REMEDIATION_PASSWORD", ""), repr=False)
+    remediation_role: str = "APPS_WRAPPER_EXECUTE"
     mode: str = field(default_factory=lambda: os.getenv("ORACLE_DRIVER_MODE", "thin"))
     use_simulation: bool = field(
         default_factory=lambda: os.getenv("ORACLE_SIMULATION", "true").lower() == "true"

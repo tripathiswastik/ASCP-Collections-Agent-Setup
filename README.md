@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Control Plane](https://img.shields.io/badge/Framework-LangGraph%20StateGraph-orange.svg)](https://langchain-ai.github.io/langgraph/)
 [![Log Parsing](https://img.shields.io/badge/Engine-Drain%20Tree%20Parser-purple.svg)](https://github.com/logpai/logparser)
-[![Tests: 47/47](https://img.shields.io/badge/Tests-Passing%20(47%2F47)-brightgreen.svg)](tests/)
+[![Tests: 67/67](https://img.shields.io/badge/Tests-Passing%20(67%2F67)-brightgreen.svg)](tests/)
 [![Author](https://img.shields.io/badge/Author-Swastik%20Tripathi-blueviolet.svg)](https://github.com/tripathiswastik)
 
 An autonomous, stateful diagnostic control plane built to triage, diagnose, and remediate Oracle ASCP batch collection pipeline failures across dual-stage ETL architectures. Powered by **LangGraph**, **Drain algorithmic log parsing**, and **Oracle dynamic performance view lock introspection**.
@@ -82,11 +82,14 @@ d:\ag-ai\ascp-diagnostic-agent/
 
 | Safety Control | Implementation Detail |
 |---|---|
-| **Zero Hardcoded Secrets** | Credentials are strictly loaded via environment variables (`ORACLE_PASSWORD`, `SN_PASSWORD`). Missing credentials in live mode fail closed immediately. |
-| **Mandatory HITL Consent** | Resumption of high-risk actions requires an explicit boolean (`approved: true/false`), authenticated operator identity (`dba_user`), and verification that the state machine is currently paused. Omitted decisions are rejected. |
-| **SQL Injection Prevention** | All Oracle identifiers (tables, materialized views, pipes) are validated against strict alphanumeric regex (`^[A-Za-z0-9_#$]+$`). Session identifiers (`sid`, `serial`) are bounded positive integers. |
+| **Zero Hardcoded Secrets** | Credentials are strictly loaded via environment variables (`ORACLE_PASSWORD`, `SN_PASSWORD`). Missing credentials in live mode fail closed immediately. Outside development (`ASCP_ENV != 'development'`), unconfigured `ASCP_OPERATOR_TOKENS` halts startup. |
+| **Strict Header Token Auth** | Authenticates strictly via constant-time `hmac.compare_digest` against `X-API-Token`. Referer-based authentication is completely eliminated. |
+| **Action-Bound Approvals** | Every approval is cryptographically bound to a unique `approval_id`, authenticated operator (`dba_user`), pending checkpoint, target remediation action, target SID/serial, target object, and a 5-minute TTL expiration window. |
+| **Anti-Replay Protection** | Executed and expired approval tokens are committed to an anti-replay registry; replayed requests are rejected with HTTP 400/409. |
+| **Execution Role Boundaries** | Separate database roles enforced at the execution boundary: read-only diagnostics run strictly under `SELECT_CATALOG_ROLE`, while remediation mutations require authenticated approval under `APPS_WRAPPER_EXECUTE`. |
+| **SQL Comment Stripping & CTE Guard** | Strips `--` and `/* ... */` comments prior to AST token analysis; blocks multi-statement injection and rejects mutation verbs smuggled inside Common Table Expressions (CTEs). |
 | **PMON Rollback Safeguard** | Automatic inspection of `V$TRANSACTION.USED_UREC`: if active uncommitted rollback volume exceeds 100,000 records, immediate termination is deferred and alerted to prevent PMON lock contention hangs. |
-| **Localhost API Binding & CORS** | Web dashboard server binds strictly to `127.0.0.1` by default and validates origin headers to prevent cross-origin request abuse. Request payloads are capped at 5 MB. |
+| **Multi-Session Isolation** | Multi-threaded server maintains session-isolated graph instances so concurrent diagnostic sessions run without state crosstalk. |
 | **Dry-Run Remediation Mode** | Every remediation subroutine supports a `dry_run=True` mode to test and validate syntax before modifying database state. |
 
 ---
@@ -105,7 +108,7 @@ d:\ag-ai\ascp-diagnostic-agent/
 
 ## 🚀 Quickstart
 
-### 1. Run Unit & Integration Tests (47 Tests)
+### 1. Run Unit & Integration Tests (67 Tests)
 ```bash
 python tests/run_all_tests.py
 ```

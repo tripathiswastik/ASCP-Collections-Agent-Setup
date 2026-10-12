@@ -8,6 +8,7 @@ import copy
 import time
 import json
 import logging
+import uuid
 from typing import Dict, Any, Optional, Callable, List, Tuple
 from ascp_agent.state import AgentState, DiagnosticState, AIMessage, HumanMessage, Command, Send, InterruptSignal, interrupt
 from ascp_agent.drain_parser import DrainLogParser
@@ -186,6 +187,22 @@ class CompiledStateGraph:
             # Inject human approval or resume value
             if isinstance(resume_command.resume, dict):
                 approved = resume_command.resume.get("approved", False)
+                pending_appr = last_record.state.get("interrupt_payload") or {}
+                if approved and pending_appr:
+                    # Enforce expiration check
+                    exp = pending_appr.get("expires_at")
+                    if exp and time.time() > exp:
+                        raise ValueError("Approval request has expired (TTL exceeded).")
+                    # Enforce action and target validation if supplied
+                    req_appr_id = resume_command.resume.get("approval_id")
+                    if req_appr_id and req_appr_id != pending_appr.get("approval_id"):
+                        raise ValueError(f"Mismatched approval_id: expected {pending_appr.get('approval_id')}, got {req_appr_id}")
+                    req_action = resume_command.resume.get("target_action")
+                    if req_action and req_action != pending_appr.get("action"):
+                        raise ValueError(f"Mismatched remediation action: expected {pending_appr.get('action')}, got {req_action}")
+                    req_sid = resume_command.resume.get("target_sid")
+                    if req_sid is not None and req_sid != pending_appr.get("target_sid"):
+                        raise ValueError(f"Mismatched target SID: expected {pending_appr.get('target_sid')}, got {req_sid}")
                 state["remediation_approved"] = approved
                 state["human_response"] = resume_command.resume
             elif isinstance(resume_command.resume, bool):
@@ -479,7 +496,16 @@ def hitl_gate_node(state: AgentState) -> dict:
             if action == "KILL_SESSION"
             else format_purge_staging_sql()
         )
+        now_ts = time.time()
+        ttl_seconds = 300  # 5 minute approval window
+        expires_ts = now_ts + ttl_seconds
+        appr_id = f"appr-{uuid.uuid4().hex[:12]}"
+
         approval_payload = {
+            "approval_id": appr_id,
+            "created_at": now_ts,
+            "expires_at": expires_ts,
+            "expires_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_ts)),
             "action": action,
             "risk_tier": risk,
             "confidence_score": confidence,

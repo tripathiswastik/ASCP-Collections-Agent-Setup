@@ -87,24 +87,136 @@ class EnterpriseGuardrails:
         return user_or_log_text.strip()
 
     def validate_sql_command(self, sql_statement: str) -> bool:
-        """Allow only single read-only queries, an exact kill statement, or allowlisted procedures."""
+        """Allow only single read-only queries, an exact kill statement, or allowlisted procedures.
+        Strips comments, forbids multiple statements, and inspects tokens to prevent DML/DDL bypasses.
+        """
         if not self.config.enforce_least_privilege:
             return True
-        statement = sql_statement.strip().rstrip(";").strip()
-        upper = statement.upper()
-        if upper.startswith(("SELECT ", "WITH ")):
-            if ";" in statement:
-                raise SecurityViolationError("Multiple statements are not allowed.")
-            return True
+
+        if not sql_statement or not isinstance(sql_statement, str):
+            raise SecurityViolationError("Empty or invalid SQL statement.")
+
+        # 1. Strip single-line and multi-line comments to expose hidden statement injections
+        cleaned = re.sub(r"--[^\r\n]*", " ", sql_statement)
+        cleaned = re.sub(r"/\*.*?\*/", " ", cleaned, flags=re.DOTALL)
+        cleaned = cleaned.strip().rstrip(";").strip()
+        upper = cleaned.upper()
+
+        # 2. Exact ALTER SYSTEM KILL SESSION validation
         if _KILL_PATTERN.match(upper):
-            return True  # approval for this is enforced by the HITL gate, not here
+            return True
+
+        # 3. Allowlisted procedural remediation calls (BEGIN / EXEC)
         for procedure in self.config.allowed_mutation_procedures:
             proc_up = procedure.upper()
             if upper.startswith(f"BEGIN {proc_up}(") or upper.startswith(f"EXEC {proc_up}("):
                 return True
-        if ";" in statement:
+
+        # 4. Read-only query validation (SELECT / WITH)
+        if upper.startswith(("SELECT ", "WITH ")):
+            if ";" in cleaned:
+                raise SecurityViolationError("Multiple statements are not allowed in read-only queries.")
+            # Verify no mutation or execution verbs are smuggled inside CTEs or subqueries
+            mutation_tokens = re.compile(
+                r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|"
+                r"RENAME|REPLACE|EXEC|EXECUTE|CALL|DECLARE|COMMIT|ROLLBACK|SAVEPOINT|LOCK)\b",
+                re.IGNORECASE
+            )
+            match = mutation_tokens.search(cleaned)
+            if match:
+                raise SecurityViolationError(
+                    f"Forbidden mutation keyword '{match.group(1)}' detected in read-only diagnostic query."
+                )
+            return True
+
+        if ";" in cleaned:
             raise SecurityViolationError("Multiple statements are not allowed.")
-        raise SecurityViolationError(f"Statement not on the allowlist: {statement[:80]}")
+
+        raise SecurityViolationError(f"Statement not on the allowlist: {sql_statement[:80]}")
+
+    def validate_diagnostic_query(self, sql_statement: str, execution_role: str = "SELECT_CATALOG_ROLE") -> bool:
+        """Enforces execution boundary for read-only diagnostic telemetry queries.
+        Ensures execution occurs strictly under diagnostic credentials (e.g. SELECT_CATALOG_ROLE)
+        and explicitly rejects any DML, DDL, DCL, or remediation kill statements.
+        """
+        if execution_role != getattr(self.config, "diagnostic_role", "SELECT_CATALOG_ROLE"):
+            raise SecurityViolationError(
+                f"Unauthorized diagnostic execution role '{execution_role}'. "
+                f"Diagnostics must run strictly under read-only '{getattr(self.config, 'diagnostic_role', 'SELECT_CATALOG_ROLE')}'."
+            )
+
+        if not sql_statement or not isinstance(sql_statement, str):
+            raise SecurityViolationError("Empty or invalid SQL statement.")
+
+        cleaned = re.sub(r"--[^\r\n]*", " ", sql_statement)
+        cleaned = re.sub(r"/\*.*?\*/", " ", cleaned, flags=re.DOTALL).strip().rstrip(";").strip()
+        upper = cleaned.upper()
+
+        if ";" in cleaned:
+            raise SecurityViolationError("Multiple statements are forbidden in diagnostic queries.")
+
+        # Explicitly forbid session termination or procedure calls in diagnostic channel
+        if _KILL_PATTERN.match(upper) or upper.startswith(("ALTER ", "EXEC ", "BEGIN ")):
+            raise SecurityViolationError(
+                "Remediation actions cannot execute through the diagnostic read-only channel."
+            )
+
+        if not upper.startswith(("SELECT ", "WITH ")):
+            raise SecurityViolationError("Diagnostic queries must start with SELECT or WITH.")
+
+        mutation_tokens = re.compile(
+            r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|"
+            r"RENAME|REPLACE|EXEC|EXECUTE|CALL|DECLARE|COMMIT|ROLLBACK|SAVEPOINT|LOCK)\b",
+            re.IGNORECASE
+        )
+        match = mutation_tokens.search(cleaned)
+        if match:
+            raise SecurityViolationError(
+                f"Forbidden mutation keyword '{match.group(1)}' detected in read-only diagnostic query."
+            )
+        return True
+
+    def validate_remediation_command(
+        self,
+        sql_statement: str,
+        execution_role: str = "APPS_WRAPPER_EXECUTE",
+        is_hitl_approved: bool = False,
+        approval_id: Optional[str] = None
+    ) -> bool:
+        """Enforces authorization boundary for high-risk remediation database mutations.
+        Requires authenticated HITL sign-off with valid approval ID and separate execution credentials.
+        """
+        if not is_hitl_approved or not approval_id:
+            raise SecurityViolationError(
+                "Remediation execution boundary rejected: Missing mandatory HITL sign-off and approval ID."
+            )
+
+        expected_role = getattr(self.config, "remediation_role", "APPS_WRAPPER_EXECUTE")
+        if execution_role != expected_role:
+            raise SecurityViolationError(
+                f"Unauthorized remediation execution role '{execution_role}'. "
+                f"Remediation requires privileged execution role '{expected_role}'."
+            )
+
+        if not sql_statement or not isinstance(sql_statement, str):
+            raise SecurityViolationError("Empty or invalid remediation SQL statement.")
+
+        cleaned = re.sub(r"--[^\r\n]*", " ", sql_statement)
+        cleaned = re.sub(r"/\*.*?\*/", " ", cleaned, flags=re.DOTALL).strip().rstrip(";").strip()
+        upper = cleaned.upper()
+
+        if ";" in cleaned:
+            raise SecurityViolationError("Chained or multiple statements are forbidden in remediation commands.")
+
+        if _KILL_PATTERN.match(upper):
+            return True
+
+        for procedure in getattr(self.config, "allowed_mutation_procedures", []):
+            proc_up = procedure.upper()
+            if upper.startswith(f"BEGIN {proc_up}(") or upper.startswith(f"EXEC {proc_up}("):
+                return True
+
+        raise SecurityViolationError(f"Remediation statement not permitted: {sql_statement[:80]}")
 
     def track_tokens(self, input_tokens: int, output_tokens: int):
         """Tracks token expenditure against the $5.00 hard cap."""

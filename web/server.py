@@ -13,6 +13,8 @@ import threading
 import mimetypes
 import urllib.parse
 import hmac
+import uuid
+import time
 from typing import Dict, Any, Optional
 
 # Add parent directory to sys.path
@@ -31,23 +33,51 @@ from ascp_agent.simulator import SCENARIOS
 PUBLIC_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = PUBLIC_DIR
 
-# JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
+# Environment and secure token configuration
+ASCP_ENV = os.environ.get("ASCP_ENV", "development").strip().lower()
 _RAW_TOKENS = os.environ.get("ASCP_OPERATOR_TOKENS")
+
 if _RAW_TOKENS:
-    OPERATOR_TOKENS: Dict[str, str] = json.loads(_RAW_TOKENS)
-else:
+    try:
+        OPERATOR_TOKENS: Dict[str, str] = json.loads(_RAW_TOKENS)
+    except Exception as exc:
+        raise RuntimeError(f"FATAL: ASCP_OPERATOR_TOKENS must be valid JSON: {exc}")
+elif ASCP_ENV == "development":
+    # Development mode only: predefined default tokens
     OPERATOR_TOKENS: Dict[str, str] = {"dev-token": "operator", "admin-token": "lead_dba"}
+else:
+    # Fail fast outside development if tokens are unconfigured
+    raise RuntimeError(
+        "FATAL: ASCP_OPERATOR_TOKENS must be configured in environment outside development (ASCP_ENV != 'development'). "
+        "Server startup halted to prevent unauthenticated access."
+    )
 
 # Concurrency & request safety limits
 MAX_BODY_BYTES = 64 * 1024
 _INVOKE_LOCK = threading.Lock()
 
-# Thread-safe application session state
+# Thread-safe multi-session state & anti-replay approval tracking
 _SERVER_LOCK = threading.RLock()
 current_scenario_key = "ora_00054_mode6"
-active_graph = create_ascp_diagnostic_graph()
-last_graph_state: Dict[str, Any] = {}
+
+# Set of used approval IDs to prevent replay attacks
+_USED_APPROVAL_IDS: set = set()
+
+# Multi-session registry supporting concurrent / simultaneous diagnostic sessions
+_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_ACTIVE_SESSION_ID: str = "default"
 thread_counter = 1
+
+# Initialize baseline default session
+_SESSIONS[_ACTIVE_SESSION_ID] = {
+    "graph": create_ascp_diagnostic_graph(),
+    "thread_id": "web-thread-1",
+    "scenario_key": current_scenario_key,
+    "session_id": _ACTIVE_SESSION_ID,
+    "pending_approval": None,
+    "created_at": time.time(),
+    "last_state": {}
+}
 
 
 def resolve_static_path(url_path: str) -> Optional[str]:
@@ -75,16 +105,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(request, client_address, server)
 
     def _authenticate(self) -> Optional[str]:
-        """Return the operator name for a valid X-API-Token header, else None."""
+        """Return the operator name for a valid X-API-Token header or token query parameter, else None."""
         supplied = self.headers.get("X-API-Token", "").strip()
         if not supplied:
             parsed = urllib.parse.urlparse(self.path)
             qs = urllib.parse.parse_qs(parsed.query)
             supplied = qs.get("token", [""])[0] or qs.get("api_key", [""])[0]
-        if not supplied:
-            referer = self.headers.get("Referer", "")
-            if "localhost:8085" in referer or "127.0.0.1:8085" in referer:
-                supplied = "dev-token"
 
         if not supplied:
             return None
@@ -174,9 +200,13 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             })
 
         elif path == "/api/state":
+            parsed = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            sess_id = qs.get("session_id", [None])[0] or _ACTIVE_SESSION_ID
             with _SERVER_LOCK:
-                snapshot = dict(last_graph_state)
-            self._send_json({"state": snapshot})
+                sess_info = _SESSIONS.get(sess_id, {})
+                snapshot = dict(sess_info.get("last_state", {}))
+            self._send_json({"session_id": sess_id, "state": snapshot})
 
         else:
             file_path = resolve_static_path(path)
@@ -201,7 +231,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(content)
 
     def do_POST(self):
-        global current_scenario_key, active_graph, last_graph_state, thread_counter
+        global current_scenario_key, _ACTIVE_SESSION_ID, thread_counter
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -221,9 +251,20 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 with _SERVER_LOCK:
                     current_scenario_key = key
                     thread_counter += 1
-                    active_graph = create_ascp_diagnostic_graph()
-                    last_graph_state = {}
-                self._send_json({"success": True, "loaded_scenario": SCENARIOS[key]})
+                    sess_id = f"sess-{uuid.uuid4().hex[:8]}"
+                    new_graph = create_ascp_diagnostic_graph()
+                    session_info = {
+                        "graph": new_graph,
+                        "thread_id": f"web-thread-{thread_counter}",
+                        "scenario_key": key,
+                        "session_id": sess_id,
+                        "pending_approval": None,
+                        "created_at": time.time(),
+                        "last_state": {}
+                    }
+                    _SESSIONS[sess_id] = session_info
+                    _ACTIVE_SESSION_ID = sess_id
+                self._send_json({"success": True, "loaded_scenario": SCENARIOS[key], "session_id": sess_id})
             else:
                 self._send_json({"error": "Unknown scenario"}, 400)
 
@@ -244,15 +285,38 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
         elif path == "/api/diagnose":
             action = req_data.get("action")  # e.g., "RESUME" or "START"
+            sess_id = req_data.get("session_id")
+
             if action != "RESUME":
                 with _SERVER_LOCK:
                     thread_counter += 1
-                    active_graph = create_ascp_diagnostic_graph()
+                    sess_id = sess_id or f"sess-{uuid.uuid4().hex[:8]}"
+                    new_graph = create_ascp_diagnostic_graph()
+                    scen_key = req_data.get("scenario_key") or current_scenario_key
+                    thread_id = f"web-thread-{thread_counter}"
+                    session_info = {
+                        "graph": new_graph,
+                        "thread_id": thread_id,
+                        "scenario_key": scen_key,
+                        "session_id": sess_id,
+                        "pending_approval": None,
+                        "created_at": time.time(),
+                        "last_state": {}
+                    }
+                    _SESSIONS[sess_id] = session_info
+                    _ACTIVE_SESSION_ID = sess_id
+            else:
+                with _SERVER_LOCK:
+                    sess_id = sess_id or _ACTIVE_SESSION_ID
+                    session_info = _SESSIONS.get(sess_id) if sess_id else None
 
-            with _SERVER_LOCK:
-                curr_graph = active_graph
-                thread_id = f"web-thread-{thread_counter}"
-                scen_key = current_scenario_key
+                if not session_info:
+                    self._send_json({"error": f"Session '{sess_id}' not found or expired"}, 404)
+                    return
+
+            curr_graph = session_info["graph"]
+            thread_id = session_info["thread_id"]
+            scen_key = session_info["scenario_key"]
 
             try:
                 if action == "RESUME":
@@ -261,8 +325,72 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         self._send_json({"error": "'approved' must be true or false"}, 400)
                         return
 
+                    pending = session_info.get("pending_approval")
+                    if not pending:
+                        self._send_json({"error": "No pending HITL remediation checkpoint for this session"}, 400)
+                        return
+
+                    appr_id = req_data.get("approval_id")
+                    if not appr_id:
+                        self._send_json({"error": "Missing required 'approval_id' in approval request"}, 400)
+                        return
+
+                    if appr_id in _USED_APPROVAL_IDS:
+                        self._send_json({"error": f"Approval '{appr_id}' has already been consumed (anti-replay check failed)"}, 409)
+                        return
+
+                    if appr_id != pending.get("approval_id"):
+                        self._send_json({
+                            "error": f"Mismatched approval ID: expected '{pending.get('approval_id')}', received '{appr_id}'"
+                        }, 400)
+                        return
+
+                    # Expiration check
+                    if time.time() > pending.get("expires_at", 0):
+                        _USED_APPROVAL_IDS.add(appr_id)
+                        self._send_json({
+                            "error": f"Approval '{appr_id}' has expired (TTL exceeded at {pending.get('expires_at_iso')})"
+                        }, 400)
+                        return
+
+                    # Target action check
+                    target_action = req_data.get("target_action")
+                    if target_action and target_action != pending.get("action"):
+                        self._send_json({
+                            "error": f"Mismatched target action: expected '{pending.get('action')}', received '{target_action}'"
+                        }, 400)
+                        return
+
+                    # Target SID check
+                    target_sid = req_data.get("target_sid")
+                    if target_sid is not None and target_sid != pending.get("target_sid"):
+                        self._send_json({
+                            "error": f"Mismatched target SID: expected '{pending.get('target_sid')}', received '{target_sid}'"
+                        }, 400)
+                        return
+
+                    # Target object check
+                    target_obj = req_data.get("target_object")
+                    if target_obj and target_obj != pending.get("target_object"):
+                        self._send_json({
+                            "error": f"Mismatched target object: expected '{pending.get('target_object')}', received '{target_obj}'"
+                        }, 400)
+                        return
+
+                    # Mark approval as used to prevent replay attacks
+                    _USED_APPROVAL_IDS.add(appr_id)
+                    session_info["pending_approval"] = None
+
                     notes = str(req_data.get("notes", f"Decision rendered by {operator}"))[:500]
-                    resume_cmd = Command(resume={"approved": approved, "dba_user": operator, "notes": notes})
+                    resume_cmd = Command(resume={
+                        "approved": approved,
+                        "dba_user": operator,
+                        "approval_id": appr_id,
+                        "target_action": pending.get("action"),
+                        "target_sid": pending.get("target_sid"),
+                        "notes": notes,
+                        "approved_at": time.time()
+                    })
                     with _INVOKE_LOCK:
                         state = curr_graph.invoke(
                             config={"configurable": {"thread_id": thread_id}},
@@ -279,6 +407,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"error": f"Diagnostic Agent execution error: {str(exc)}"}, 500)
                 return
 
+            if state.get("interrupted") and state.get("interrupt_payload"):
+                session_info["pending_approval"] = state.get("interrupt_payload")
+
             # Convert AIMessage/HumanMessage objects to serializable dicts
             serialized_msgs = []
             for msg in state.get("messages", []):
@@ -288,11 +419,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 })
 
             with _SERVER_LOCK:
-                last_graph_state = dict(state)
-                last_graph_state["messages"] = serialized_msgs
-                resp_state = dict(last_graph_state)
+                session_info["last_state"] = dict(state)
+                session_info["last_state"]["messages"] = serialized_msgs
+                resp_state = dict(session_info["last_state"])
 
             self._send_json({
+                "session_id": sess_id,
                 "state": resp_state,
                 "interrupted": state.get("interrupted", False),
                 "interrupt_payload": state.get("interrupt_payload"),

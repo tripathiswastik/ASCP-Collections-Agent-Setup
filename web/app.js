@@ -66,6 +66,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnCloseModal = document.getElementById('btnCloseModal');
   const btnApproveAction = document.getElementById('btnApproveAction');
   const btnRejectAction = document.getElementById('btnRejectAction');
+  const modalApprovalId = document.getElementById('modalApprovalId');
+  const modalExpiresAt = document.getElementById('modalExpiresAt');
   const modalActionName = document.getElementById('modalActionName');
   const modalRiskTier = document.getElementById('modalRiskTier');
   const modalTargetObject = document.getElementById('modalTargetObject');
@@ -91,6 +93,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeTelemetry = [];
   let isStreaming = false;
   let streamTimer = null;
+  let activeSessionId = null;
+  let activePendingApproval = null;
 
   // Initialize Dashboard
   init();
@@ -745,6 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ action: 'START' })
       });
       const data = await res.json();
+      activeSessionId = data.session_id;
 
       currentSuperStep += 3;
       currentTokenSpend += 0.0022;
@@ -764,6 +769,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // If HITL interrupt triggered
       if (data.interrupted && data.interrupt_payload) {
+        activePendingApproval = data.interrupt_payload;
         setActiveNode('nodeHitl');
         openHitlModal(data.interrupt_payload);
       } else {
@@ -790,18 +796,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function resumeAgentExecution(approved) {
     setActiveNode('nodeRemediation');
+    const payload = activePendingApproval || {};
+    const resumePayload = {
+      action: 'RESUME',
+      session_id: activeSessionId,
+      approved: approved,
+      approval_id: payload.approval_id,
+      target_action: payload.action,
+      target_sid: payload.target_sid,
+      target_serial: payload.target_serial,
+      target_object: payload.target_object,
+      dba_user: 'DBA_OPERATOR',
+      notes: approved ? 'Approved via Web Dashboard HITL Gate' : 'Rejected by DBA operator'
+    };
+
     try {
       const res = await apiFetch('/api/diagnose', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'RESUME',
-          approved: approved,
-          dba_user: 'DBA_OPERATOR',
-          notes: approved ? 'Approved via Web Dashboard HITL Gate' : 'Rejected by DBA operator'
-        })
+        body: JSON.stringify(resumePayload)
       });
       const data = await res.json();
+
+      if (!res.ok) {
+        addConsoleLog('ERROR', data.error || 'Remediation request rejected by server');
+        return;
+      }
 
       currentSuperStep += 1;
       currentTokenSpend += 0.0008;
@@ -822,6 +842,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function openHitlModal(payload) {
+    activePendingApproval = payload;
+    if (modalApprovalId) modalApprovalId.textContent = payload.approval_id || 'appr-pending';
+    if (modalExpiresAt) modalExpiresAt.textContent = payload.expires_at_iso || '5m Window';
     modalActionName.textContent = payload.action;
     modalRiskTier.textContent = `${payload.risk_tier} RISK`;
     modalTargetObject.textContent = payload.target_object || 'MSC_ST_DEMANDS';

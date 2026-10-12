@@ -5,6 +5,7 @@ Runs-in: Standalone client process communicating with local or containerized ASC
 """
 
 import urllib.request
+import urllib.error
 import json
 import sys
 
@@ -58,15 +59,30 @@ def run_verification(base_url="http://localhost:8085"):
     diag = req("/api/diagnose", {"action": "START"})
     assert diag.get("interrupted") is True, "Expected graph to pause at HITL Gate!"
     payload = diag.get("interrupt_payload", {})
+    sess_id = diag.get("session_id")
+    appr_id = payload.get("approval_id")
+    assert appr_id, "Expected valid approval_id in interrupt payload!"
     print(f" -> HITL Gate Triggered: Interrupted = {diag.get('interrupted')}")
+    print(f" -> Approval ID: {appr_id} (Expires: {payload.get('expires_at_iso')})")
     print(f" -> Target Action: {payload.get('action')}")
     print(f" -> Risk Tier: {payload.get('risk_tier')}")
     print(f" -> Target Session SID: {payload.get('target_sid')}")
     print(f" -> Target Object: {payload.get('target_object')}")
 
     # 6. Approve & Execute Remediation -> ServiceNow Incident Ticket
-    print("\n[Step 6] Approving Remediation (Click 'Approve & Execute Remediation')...")
-    resumed = req("/api/diagnose", {"action": "RESUME", "approved": True, "dba_user": "LEAD_DBA", "notes": "Approved by Lead DBA"})
+    print("\n[Step 6] Approving Remediation with action-bound approval ID...")
+    resumed = req("/api/diagnose", {
+        "action": "RESUME",
+        "session_id": sess_id,
+        "approved": True,
+        "approval_id": appr_id,
+        "target_action": payload.get("action"),
+        "target_sid": payload.get("target_sid"),
+        "target_serial": payload.get("target_serial"),
+        "target_object": payload.get("target_object"),
+        "dba_user": "LEAD_DBA",
+        "notes": "Approved by Lead DBA"
+    })
     state = resumed.get("state", {})
     print(f" -> Execution Completed: {resumed.get('completed')}")
     print(f" -> Session Remediation Success: {state.get('is_remediated')}")
@@ -75,6 +91,23 @@ def run_verification(base_url="http://localhost:8085"):
     print(f" -> Priority: {sn_inc.get('priority')}, State: {sn_inc.get('state')}")
     print(f" -> Short Description: {sn_inc.get('short_description')}")
     print(f" -> Dispatched At: {sn_inc.get('dispatched_at')}")
+
+    # 7. Verify Anti-Replay Protection: Replaying the same approval must fail
+    print("\n[Step 7] Testing Anti-Replay: Attempting to replay consumed approval ID...")
+    try:
+        req("/api/diagnose", {
+            "action": "RESUME",
+            "session_id": sess_id,
+            "approved": True,
+            "approval_id": appr_id,
+            "target_action": payload.get("action"),
+            "dba_user": "MALICIOUS_ACTOR"
+        })
+        print(" [!] ERROR: Replayed approval was not rejected!")
+        sys.exit(1)
+    except urllib.error.HTTPError as err:
+        assert err.code in (400, 409), f"Expected HTTP 400 or 409, got {err.code}"
+        print(f" -> Anti-Replay Verified: Server rejected replayed approval with HTTP {err.code}")
     
     print("\n================================================================================")
     print("      [SUCCESS] ALL SCRATCHPAD CHECKLIST ITEMS VERIFIED AND VALIDATED!")
