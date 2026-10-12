@@ -1,6 +1,6 @@
 # Autonomous ASCP Collections Diagnostic Agent
 
-### Oracle E-Business Suite (EBS) & Advanced Supply Chain Planning (ASCP) Control Plan
+### Oracle E-Business Suite (EBS) & Advanced Supply Chain Planning (ASCP) Control Panel
 
 An autonomous, stateful diagnostic control plane built to triage, diagnose, and remediate Oracle ASCP batch collection pipeline failures across dual-stage ETL architectures. Powered by **LangGraph**, **Drain algorithmic log parsing**, and **Oracle dynamic performance view lock introspection**.
 
