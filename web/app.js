@@ -769,7 +769,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch('/api/diagnose', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'RESUME', approved: approved })
+        body: JSON.stringify({
+          action: 'RESUME',
+          approved: approved,
+          dba_user: 'DBA_OPERATOR',
+          notes: approved ? 'Approved via Web Dashboard HITL Gate' : 'Rejected by DBA operator'
+        })
       });
       const data = await res.json();
 

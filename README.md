@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Control Plane](https://img.shields.io/badge/Framework-LangGraph%20StateGraph-orange.svg)](https://langchain-ai.github.io/langgraph/)
 [![Log Parsing](https://img.shields.io/badge/Engine-Drain%20Tree%20Parser-purple.svg)](https://github.com/logpai/logparser)
-[![Tests: 31/31](https://img.shields.io/badge/Tests-Passing%20(31%2F31)-brightgreen.svg)](tests/)
+[![Tests: 47/47](https://img.shields.io/badge/Tests-Passing%20(47%2F47)-brightgreen.svg)](tests/)
 [![Author](https://img.shields.io/badge/Author-Swastik%20Tripathi-blueviolet.svg)](https://github.com/tripathiswastik)
 
 An autonomous, stateful diagnostic control plane built to triage, diagnose, and remediate Oracle ASCP batch collection pipeline failures across dual-stage ETL architectures. Powered by **LangGraph**, **Drain algorithmic log parsing**, and **Oracle dynamic performance view lock introspection**.
@@ -18,7 +18,8 @@ An autonomous, stateful diagnostic control plane built to triage, diagnose, and 
    - Monitors execution progression across **Source ADS** &rarr; **Snapshot Logs (`MLOG$_`)** &rarr; **Stage 1 Staging (`MSC_ST_*`)** &rarr; **Stage 2 ODS (`MSC_*`, `plan_id = -1`)** &rarr; **Stage 3 PDS (`plan_id > 0`)**.
    - Tracks `MSC_APPS_INSTANCES.ST_STATUS` (0 = IDLE, 1 = PULL_PROCESSING, 2 = LOAD_PROCESSING, 3 = PURGE_PROCESSING, -1 = ERROR_STALLED).
 
-2. **Real-Time Hierarchical Oracle Lock Engine**
+2. **Real-Time Hierarchical Oracle Lock Engine & Connection Pooling**
+   - Enterprise connection pooling via `python-oracledb` thin mode with automatic simulation fallback.
    - Interrogates `V$SESSION`, `V$LOCK`, `V$LOCKED_OBJECT`, `DBA_OBJECTS`, and `V$SQL` using recursive `CONNECT BY PRIOR s.sid = s.blocking_session` queries.
    - Maps enqueue lock modes 0 through 6 (`LOCKED_MODE = 6` Exclusive locks blocking `MSC_ST_*` staging truncations and worker writes).
 
@@ -34,7 +35,7 @@ An autonomous, stateful diagnostic control plane built to triage, diagnose, and 
    - Auto-generates structured incident tickets (`POST /api/now/table/incident`) with detailed `u_diagnostic_payload`.
 
 6. **Interactive Glassmorphic Web Dashboard**
-   - Real-time animated pipeline flow, interactive hierarchical lock tree, Drain parser studio, and one-click HITL approval modal.
+   - Real-time animated pipeline flow, interactive SVG hierarchical lock tree visualizer with Bézier connectors, live streaming log terminal, Drain parser studio, and one-click HITL approval modal.
 
 ---
 
@@ -45,7 +46,8 @@ d:\ag-ai\ascp-diagnostic-agent/
 ├── README.md
 ├── requirements.txt
 ├── ascp_agent/
-│   ├── config.py             # Oracle DB, ServiceNow, and Guardrails config
+│   ├── config.py             # Oracle DB, ServiceNow, and Guardrails config with fail-closed checks
+│   ├── db.py                 # Enterprise Oracle connection pool with thin driver & simulation fallback
 │   ├── state.py              # DiagnosticState, Reducers, Command, interrupt primitives
 │   ├── graph.py              # LangGraph StateGraph, nodes, routing, checkpointer
 │   ├── drain_parser.py       # Drain log parsing tree algorithm
@@ -53,7 +55,7 @@ d:\ag-ai\ascp-diagnostic-agent/
 │   ├── pipeline_monitor.py   # ASCP ETL stages & ST_STATUS registry monitor
 │   ├── failure_modes.py      # Diagnostic catalog (ORA-00054, ORA-14098, ORA-02478, ORA-00001, ORA-12571)
 │   ├── hitl_governance.py    # Risk-tiered HITL governance matrix
-│   ├── remediation.py        # Automated remediation subroutines (KILL_SESSION, PURGE_STAGING, etc.)
+│   ├── remediation.py        # Validated remediation subroutines (KILL_SESSION, PURGE_STAGING, etc.)
 │   ├── itsm_service_now.py   # ServiceNow Table REST API dispatcher
 │   ├── guardrails.py         # Least-privilege, prompt sanitization, step caps, token tracking
 │   ├── simulator.py          # Realistic Oracle EBS scenario presets
@@ -61,17 +63,31 @@ d:\ag-ai\ascp-diagnostic-agent/
 ├── tests/
 │   ├── test_drain_parser.py
 │   ├── test_lock_engine.py
+│   ├── test_db_pool.py
 │   ├── test_langgraph_agent.py
 │   ├── test_failure_scenarios.py
+│   ├── test_safety_and_governance.py
 │   └── run_all_tests.py
 ├── web/
-│   ├── server.py             # HTTP server with REST APIs
-│   └── public/
-│       ├── index.html        # Executive Dashboard UI
-│       ├── app.js            # Frontend state & HITL controller
-│       └── style.css         # Modern glassmorphism stylesheet
+│   ├── server.py             # Multi-threaded secure HTTP server & REST API backend
+│   ├── index.html            # Canonical executive dashboard UI
+│   ├── app.js                # Frontend state, SVG tree visualizer, and HITL controller
+│   └── style.css             # Glassmorphic dark-theme stylesheet
 └── sample_logs/              # Real-world Oracle ASCP log files
 ```
+
+---
+
+## 🛡️ Enterprise Safety, Security & Governance Controls
+
+| Safety Control | Implementation Detail |
+|---|---|
+| **Zero Hardcoded Secrets** | Credentials are strictly loaded via environment variables (`ORACLE_PASSWORD`, `SN_PASSWORD`). Missing credentials in live mode fail closed immediately. |
+| **Mandatory HITL Consent** | Resumption of high-risk actions requires an explicit boolean (`approved: true/false`), authenticated operator identity (`dba_user`), and verification that the state machine is currently paused. Omitted decisions are rejected. |
+| **SQL Injection Prevention** | All Oracle identifiers (tables, materialized views, pipes) are validated against strict alphanumeric regex (`^[A-Za-z0-9_#$]+$`). Session identifiers (`sid`, `serial`) are bounded positive integers. |
+| **PMON Rollback Safeguard** | Automatic inspection of `V$TRANSACTION.USED_UREC`: if active uncommitted rollback volume exceeds 100,000 records, immediate termination is deferred and alerted to prevent PMON lock contention hangs. |
+| **Localhost API Binding & CORS** | Web dashboard server binds strictly to `127.0.0.1` by default and validates origin headers to prevent cross-origin request abuse. Request payloads are capped at 5 MB. |
+| **Dry-Run Remediation Mode** | Every remediation subroutine supports a `dry_run=True` mode to test and validate syntax before modifying database state. |
 
 ---
 
@@ -89,7 +105,7 @@ d:\ag-ai\ascp-diagnostic-agent/
 
 ## 🚀 Quickstart
 
-### 1. Run Unit & Integration Tests
+### 1. Run Unit & Integration Tests (47 Tests)
 ```bash
 python tests/run_all_tests.py
 ```

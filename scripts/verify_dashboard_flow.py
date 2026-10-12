@@ -64,7 +64,7 @@ def run_verification(base_url="http://localhost:8085"):
 
     # 6. Approve & Execute Remediation -> ServiceNow Incident Ticket
     print("\n[Step 6] Approving Remediation (Click 'Approve & Execute Remediation')...")
-    resumed = req("/api/diagnose", {"action": "RESUME", "approved": True, "notes": "Approved by Lead DBA"})
+    resumed = req("/api/diagnose", {"action": "RESUME", "approved": True, "dba_user": "LEAD_DBA", "notes": "Approved by Lead DBA"})
     state = resumed.get("state", {})
     print(f" -> Execution Completed: {resumed.get('completed')}")
     print(f" -> Session Remediation Success: {state.get('is_remediated')}")
