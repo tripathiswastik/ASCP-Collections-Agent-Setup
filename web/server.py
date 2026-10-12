@@ -1,7 +1,7 @@
-"""High-performance HTTP server for ASCP Collections Diagnostic Agent Web Dashboard.
-Runs zero-dependency with Python standard library.
-Provides REST APIs for pipeline telemetry, Drain parsing, lock analysis, LangGraph execution,
-HITL gate approval, and static file serving.
+"""
+Python Version: 3.10+ (Target: Python 3.10, 3.11, 3.12)
+Purpose: Multi-threaded HTTP server and REST API backend hosting the ASCP Diagnostic Agent monitoring dashboard.
+Runs-in: Standalone daemon process, Docker container, or background service (default port 8085).
 """
 
 import http.server

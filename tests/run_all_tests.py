@@ -1,4 +1,8 @@
-"""Runner script to execute all unit and integration test suites."""
+"""
+Python Version: 3.10+ (Target: Python 3.10, 3.11, 3.12)
+Purpose: Test runner script to discover and execute all unit and integration test suites for Autonomous Oracle ASCP Diagnostic Agent.
+Runs-in: Local development shell, CI test runner, or autonomous agent evaluation runtime.
+"""
 
 import unittest
 import sys

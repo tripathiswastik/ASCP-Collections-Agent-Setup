@@ -1,5 +1,7 @@
-"""Centralized Test Fixtures and Mocks for ASCP Diagnostic Agent Test Suite.
-Provides standard reusable fixtures for pytest and unittest test cases.
+"""
+Python Version: 3.10+ (Target: Python 3.10, 3.11, 3.12)
+Purpose: Centralized test fixtures, telemetry mocks, and database connection factories for ASCP Diagnostic Agent test suite.
+Runs-in: Pytest and unittest execution harnesses across local and CI environments.
 """
 
 from typing import Dict, Any, List, Optional

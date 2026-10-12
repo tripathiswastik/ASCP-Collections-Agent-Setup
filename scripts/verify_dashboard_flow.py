@@ -1,3 +1,9 @@
+"""
+Python Version: 3.10+ (Target: Python 3.10, 3.11, 3.12)
+Purpose: End-to-end verification script testing live API endpoints and dashboard workflow against the ASCP diagnostic web server.
+Runs-in: Standalone client process communicating with local or containerized ASCP Diagnostic Web Server.
+"""
+
 import urllib.request
 import json
 import sys
