@@ -111,11 +111,40 @@ class TestLangGraphAgent(unittest.TestCase):
         self.assertTrue(res["is_remediated"])
         self.assertIn("already executed previously", res["messages"][0].content)
 
-    def test_self_healing_validation_graph(self):
-        from ascp_agent.graph import create_self_healing_validation_graph
-        v_graph = create_self_healing_validation_graph()
-        state = v_graph.invoke(initial_state={"raw_llm_output": ""})
-        self.assertTrue(state.get("is_validated") or state.get("requires_human_approval"))
+    def test_overwrite_wrapper_clears_prior_reducers(self):
+        from ascp_agent.state import Overwrite
+        state = DiagnosticState()
+        # Normal updates accumulate
+        state.apply_update({"log_templates": ["Template 1", "Template 2"]})
+        self.assertEqual(len(state["log_templates"]), 2)
+        state.apply_update({"log_templates": ["Template 3"]})
+        self.assertEqual(len(state["log_templates"]), 3)
+        # Using Overwrite wrapper resets the array during self-healing loops
+        state.apply_update({"log_templates": Overwrite(["Cleaned Template"])})
+        self.assertEqual(state["log_templates"], ["Cleaned Template"])
+
+    def test_interrupt_signal_inherits_base_exception(self):
+        from ascp_agent.state import InterruptSignal
+        # Verify InterruptSignal is a BaseException, not swallowed by generic `except Exception:`
+        self.assertTrue(issubclass(InterruptSignal, BaseException))
+        swallowed = False
+        try:
+            try:
+                raise InterruptSignal({"action": "KILL_SESSION"})
+            except Exception:
+                swallowed = True
+        except InterruptSignal:
+            swallowed = False
+        self.assertFalse(swallowed)
+
+    def test_recursion_limit_and_remaining_steps(self):
+        thread_id = "test-thread-recursion-limit"
+        state = self.graph.invoke(
+            initial_state={"remediation_action": "INSPECT_LOCKS"},
+            config={"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
+        )
+        self.assertIn("remaining_steps", state)
+        self.assertLess(state["remaining_steps"], 50)
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,9 +27,32 @@ class RemediationEngine:
     def __init__(self, connection_config: Optional[Any] = None):
         self.config = connection_config
 
-    def execute_kill_session(self, sid: int, serial: int, object_name: str) -> RemediationResult:
-        """Issues ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE."""
+    def execute_kill_session(self, sid: int, serial: int, object_name: str, undo_check: Optional[Dict[str, Any]] = None) -> RemediationResult:
+        """Issues ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE after validating undo rollback volume."""
         start = time.time()
+
+        # Prevent PMON un-abortable rollback lock hang if uncommitted transaction volume is large
+        if undo_check and undo_check.get("high_rollback_risk"):
+            used = undo_check.get("used_urec", 0)
+            sec = undo_check.get("estimated_rollback_sec", 0)
+            return RemediationResult(
+                action="DEFERRED_ROLLBACK_ALERT",
+                success=False,
+                command_executed=f"-- TERMINATION DEFERRED: High Undo Rollback Volume ({used} records)",
+                message=f"Session termination deferred: SID {sid} has {used} uncommitted undo records (estimated {sec}s rollback). Immediate kill will hang on enq: TM - contention while PMON rolls back. Dispatched alert to DBA via ServiceNow.",
+                target_object=object_name,
+                execution_time_ms=round((time.time() - start) * 1000, 2),
+                audit_record={
+                    "sid": sid,
+                    "serial": serial,
+                    "object": object_name,
+                    "used_urec": used,
+                    "action": "DEFERRED_ROLLBACK_ALERT",
+                    "status": "ALERTED",
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                }
+            )
+
         sql_cmd = f"ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE;"
 
         # In production with live DB: cursor.execute("BEGIN APPS.KILL_SESSION_WRAPPER(:1, :2); END;", [sid, serial])

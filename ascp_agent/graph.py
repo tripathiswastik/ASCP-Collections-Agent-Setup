@@ -163,12 +163,17 @@ class CompiledStateGraph:
             state = DiagnosticState(initial_state or {})
             current_node = self.graph.entry_point
 
+        recursion_limit = config.get("recursion_limit", 50)
         step_count = 0
 
         while current_node and current_node != END:
-            # 1. Enforce super-step cap guardrail (Max 10 super-steps)
-            guardrails.check_super_step_limit()
+            if step_count >= recursion_limit:
+                raise RecursionError(f"GraphRecursionError: Recursion limit of {recursion_limit} reached without reaching terminal node.")
             step_count += 1
+            state["remaining_steps"] = max(0, recursion_limit - step_count)
+
+            # 1. Enforce super-step cap guardrail
+            guardrails.check_super_step_limit()
 
             # 2. Track token spend estimation (simulating LLM reasoning consumption)
             guardrails.track_tokens(input_tokens=420, output_tokens=180)

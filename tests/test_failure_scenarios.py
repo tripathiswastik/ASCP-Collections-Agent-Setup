@@ -104,5 +104,32 @@ class TestFailureScenariosAndGuardrails(unittest.TestCase):
         route3 = HITLGovernanceEngine.evaluate_governance_routing("CMCLEAN_EXEC", confidence_score=95.0)
         self.assertEqual(route3, "MANDATORY_HITL_INTERRUPT")
 
+    def test_undo_volume_deferred_rollback_alert(self):
+        from ascp_agent.lock_engine import LockDiagnosticsEngine
+        from ascp_agent.remediation import RemediationEngine
+        engine = LockDiagnosticsEngine()
+        # Normal session (low undo records)
+        normal_undo = engine.inspect_session_undo_volume(412)
+        self.assertFalse(normal_undo["high_rollback_risk"])
+        self.assertEqual(normal_undo["recommendation"], "PROCEED_WITH_TERMINATION")
+
+        # Large uncommitted transaction (e.g. sid 999 with >100k undo records)
+        high_undo = engine.inspect_session_undo_volume(999)
+        self.assertTrue(high_undo["high_rollback_risk"])
+        self.assertEqual(high_undo["recommendation"], "DEFER_KILL_ALERT_DBA")
+
+        rem = RemediationEngine()
+        res = rem.execute_kill_session(sid=999, serial=1234, object_name="MSC_ST_DEMANDS", undo_check=high_undo)
+        self.assertFalse(res.success)
+        self.assertEqual(res.action, "DEFERRED_ROLLBACK_ALERT")
+        self.assertIn("enq: TM - contention", res.message)
+
+    def test_servicenow_dynamic_oauth_token(self):
+        client = ServiceNowClient()
+        token1 = client.get_valid_oauth_token()
+        self.assertTrue(token1.startswith("tok_sn_"))
+        endpoint = client.get_oauth_token_endpoint()
+        self.assertTrue(endpoint.endswith("/oauth_token.do"))
+
 if __name__ == "__main__":
     unittest.main()

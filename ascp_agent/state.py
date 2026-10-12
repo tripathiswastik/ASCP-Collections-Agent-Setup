@@ -66,8 +66,18 @@ class Command:
         self.goto = goto
         self.resume = resume
 
-class InterruptSignal(Exception):
-    """Exception raised by interrupt() to pause graph execution for human sign-off."""
+class Overwrite(list):
+    """Wrapper instructing reducers to overwrite an accumulated state array instead of appending.
+    Essential for self-healing re-prompt loops where error buffers or templates must be cleared.
+    """
+    def __init__(self, iterable=None):
+        super().__init__(iterable or [])
+
+class InterruptSignal(BaseException):
+    """Exception raised by interrupt() to pause graph execution for human sign-off.
+    Inherits from BaseException so standard `except Exception:` blocks in node functions
+    cannot accidentally swallow the interrupt signal.
+    """
     def __init__(self, payload: Dict[str, Any]):
         super().__init__("Graph paused for human sign-off.")
         self.payload = payload
@@ -97,6 +107,7 @@ class DiagnosticStateSchema(TypedDict, total=False):
     intermediate_query_results: Annotated[List[Dict[str, Any]], operator.add]
     lock_telemetry: Annotated[List[Dict[str, Any]], operator.add]
     log_templates: Annotated[List[Dict[str, Any]], operator.add]
+    sql_traces: Annotated[List[Dict[str, Any]], operator.add]
     raw_logs: Annotated[List[str], operator.add]
     audit_trail: Annotated[List[Dict[str, Any]], operator.add]
     context: DiagnosticContext
@@ -132,6 +143,7 @@ class AgentState(dict):
         "intermediate_query_results": operator.add,
         "lock_telemetry": operator.add,
         "log_templates": operator.add,
+        "sql_traces": operator.add,
         "raw_logs": operator.add,
         "audit_trail": operator.add
     }
@@ -146,6 +158,7 @@ class AgentState(dict):
         self.setdefault("intermediate_query_results", [])
         self.setdefault("lock_telemetry", [])
         self.setdefault("log_templates", [])
+        self.setdefault("sql_traces", [])
         self.setdefault("raw_logs", [])
         self.setdefault("audit_trail", [])
         self.setdefault("failure_domain", "DATABASE_LOCK")
@@ -168,9 +181,11 @@ class AgentState(dict):
         self.setdefault("parsed_diagnosis", None)
 
     def apply_update(self, update_dict: Dict[str, Any]):
-        """Apply partial dictionary update respecting field reducers."""
+        """Apply partial dictionary update respecting field reducers and Overwrite wrapper."""
         for k, v in update_dict.items():
-            if k in self._reducers and k in self and self[k] is not None:
+            if isinstance(v, Overwrite):
+                self[k] = list(v)
+            elif k in self._reducers and k in self and self[k] is not None:
                 reducer = self._reducers[k]
                 self[k] = reducer(self[k], v)
             elif k == "context" and isinstance(v, dict):
