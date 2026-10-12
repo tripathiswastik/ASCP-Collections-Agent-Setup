@@ -1,12 +1,18 @@
-# Autonomous ASCP Collections Diagnostic Agent
-
+# 🚀 Autonomous ASCP Collections Diagnostic Agent
 ### Oracle E-Business Suite (EBS) & Advanced Supply Chain Planning (ASCP) Control Panel
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Control Plane](https://img.shields.io/badge/Framework-LangGraph%20StateGraph-orange.svg)](https://langchain-ai.github.io/langgraph/)
+[![Log Parsing](https://img.shields.io/badge/Engine-Drain%20Tree%20Parser-purple.svg)](https://github.com/logpai/logparser)
+[![Tests: 31/31](https://img.shields.io/badge/Tests-Passing%20(31%2F31)-brightgreen.svg)](tests/)
+[![Author](https://img.shields.io/badge/Author-Swastik%20Tripathi-blueviolet.svg)](https://github.com/tripathiswastik)
 
 An autonomous, stateful diagnostic control plane built to triage, diagnose, and remediate Oracle ASCP batch collection pipeline failures across dual-stage ETL architectures. Powered by **LangGraph**, **Drain algorithmic log parsing**, and **Oracle dynamic performance view lock introspection**.
 
 ---
 
-## Key Capabilities
+## 🌟 Key Capabilities
 
 1. **Dual-Stage ETL Pipeline Monitoring & Registry Tracking**
    - Monitors execution progression across **Source ADS** &rarr; **Snapshot Logs (`MLOG$_`)** &rarr; **Stage 1 Staging (`MSC_ST_*`)** &rarr; **Stage 2 ODS (`MSC_*`, `plan_id = -1`)** &rarr; **Stage 3 PDS (`plan_id > 0`)**.
@@ -32,7 +38,7 @@ An autonomous, stateful diagnostic control plane built to triage, diagnose, and 
 
 ---
 
-## Directory Structure
+## 🏗️ Repository Architecture
 
 ```
 d:\ag-ai\ascp-diagnostic-agent/
@@ -69,7 +75,7 @@ d:\ag-ai\ascp-diagnostic-agent/
 
 ---
 
-## Diagnostic & Remediation Matrix
+## 📊 Diagnostic & Remediation Matrix
 
 | Domain | Oracle Objects / Views | Error Code | Root Cause Mechanism | Remediation Procedure |
 |---|---|---|---|---|
@@ -81,7 +87,7 @@ d:\ag-ai\ascp-diagnostic-agent/
 
 ---
 
-## Quick Start
+## 🚀 Quickstart
 
 ### 1. Run Unit & Integration Tests
 ```bash
@@ -105,3 +111,10 @@ python -m ascp_agent.cli diagnose --scenario ora_00054_mode6
 python web/server.py 8085
 ```
 Open [http://localhost:8085](http://localhost:8085) in your web browser.
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
