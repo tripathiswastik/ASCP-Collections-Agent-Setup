@@ -51,12 +51,16 @@ class DrainLogParser:
         depth: int = 4,
         similarity_threshold: float = 0.5,
         max_children: int = 100,
-        param_token: str = "<*>"
+        param_token: str = "<*>",
+        max_clusters: int = 500,
+        max_leaf_clusters: int = 20
     ):
         self.depth = depth  # Max depth of prefix tree
         self.similarity_threshold = similarity_threshold
         self.max_children = max_children
         self.param_token = param_token
+        self.max_clusters = max_clusters
+        self.max_leaf_clusters = max_leaf_clusters
         self.root_node = Node(depth=1)
         self.clusters: List[LogCluster] = []
 
@@ -149,18 +153,27 @@ class DrainLogParser:
         return best_cluster
 
     def _calculate_similarity(self, template_tokens: List[str], tokens: List[str]) -> float:
-        """Sequence similarity metric between cluster template and incoming tokens."""
-        if len(template_tokens) != len(tokens):
+        """Sequence similarity metric between cluster template and incoming tokens with early short-circuit."""
+        n = len(tokens)
+        if len(template_tokens) != n or n == 0:
             return 0.0
 
+        needed_matches = int(n * self.similarity_threshold)
         matches = 0
+        remaining = n
+
         for t1, t2 in zip(template_tokens, tokens):
             if t1 == self.param_token or t1 == t2:
                 matches += 1
-        return matches / float(len(tokens))
+            if (matches + remaining) < needed_matches:
+                # Early short-circuit: impossible to achieve required similarity
+                return 0.0
+            remaining -= 1
+
+        return matches / float(n)
 
     def _add_to_tree(self, root: Node, cluster: LogCluster, tokens: List[str]):
-        """Insert new cluster into the prefix tree."""
+        """Insert new cluster into the prefix tree with bounded leaf cluster size."""
         seq_len = len(tokens)
         len_str = str(seq_len)
 
@@ -190,10 +203,15 @@ class DrainLogParser:
             curr_node = curr_node.children[node_token]
             current_depth += 1
 
+        # Bound leaf clusters to prevent linear comparison blowup
+        if len(curr_node.log_clusters) >= self.max_leaf_clusters:
+            curr_node.log_clusters.sort(key=lambda c: c.size, reverse=True)
+            curr_node.log_clusters.pop()
+
         curr_node.log_clusters.append(cluster)
 
     def parse_line(self, line: str) -> Dict[str, Any]:
-        """Parse a single raw log line into structured template & parameters."""
+        """Parse a single raw log line into structured template & parameters with cluster capacity cap."""
         raw_line = line.strip()
         if not raw_line:
             return {"raw": "", "template": "", "parameters": {}, "cluster_id": -1}
@@ -202,7 +220,11 @@ class DrainLogParser:
         match = self._tree_search(self.root_node, tokens)
 
         if match is None:
-            # Create new cluster
+            # Respect global cluster capacity cap
+            if len(self.clusters) >= self.max_clusters:
+                min_cluster = min(self.clusters, key=lambda c: c.size)
+                self.clusters.remove(min_cluster)
+
             new_id = len(self.clusters) + 1
             cluster = LogCluster(tokens, new_id)
             self.clusters.append(cluster)
@@ -237,11 +259,22 @@ class DrainLogParser:
             "cluster_id": match.log_id if match else len(self.clusters)
         }
 
-    def parse_log_text(self, log_content: str) -> List[Dict[str, Any]]:
-        """Parse multi-line log or trace dump."""
-        results = []
-        for line in log_content.splitlines():
-            line = line.strip()
-            if line:
-                results.append(self.parse_line(line))
-        return results
+    def parse_log_stream(self, lines, max_lines: Optional[int] = None):
+        """Generator yielding parsed lines to avoid massive memory allocations."""
+        count = 0
+        for line in lines:
+            line_str = line.strip() if isinstance(line, str) else str(line).strip()
+            if line_str:
+                if max_lines and count >= max_lines:
+                    break
+                yield self.parse_line(line_str)
+                count += 1
+
+    def parse_log_text(self, log_content: str, max_lines: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Parse multi-line log or trace dump with optional line cap."""
+        if not log_content:
+            return []
+        lines = [line.strip() for line in log_content.splitlines() if line.strip()]
+        if max_lines and len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        return list(self.parse_log_stream(lines, max_lines=max_lines))

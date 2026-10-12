@@ -9,8 +9,11 @@ import socketserver
 import json
 import os
 import sys
+import threading
+import mimetypes
 import urllib.parse
-from typing import Dict, Any
+from collections import OrderedDict
+from typing import Dict, Any, Tuple, Optional
 
 # Add parent directory to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -31,12 +34,22 @@ from ascp_agent.guardrails import EnterpriseGuardrails
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 PUBLIC_DIR = os.path.abspath(os.path.join(WEB_DIR, "public"))
 
-# Application session state
+# Thread-safe application session state
+_SERVER_LOCK = threading.RLock()
 current_scenario_key = "ora_00054_mode6"
 active_graph = create_ascp_diagnostic_graph()
 last_graph_state: Dict[str, Any] = {}
 thread_counter = 1
-_STATIC_CACHE: Dict[str, Tuple[bytes, str]] = {}
+
+# Bounded LRU static file cache to prevent memory leaks
+_STATIC_CACHE: "OrderedDict[str, Tuple[bytes, str]]" = OrderedDict()
+MAX_STATIC_CACHE_ENTRIES = 100
+MAX_STATIC_FILE_SIZE = 5 * 1024 * 1024  # 5 MB limit
+
+class ThreadedASCPDiagnosticServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """Multi-threaded non-blocking HTTP server dispatching requests to concurrent worker threads."""
+    allow_reuse_address = True
+    daemon_threads = True
 
 class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server):
@@ -75,12 +88,13 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        global current_scenario_key, last_graph_state
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
         if path == "/api/status":
-            scenario_info = SCENARIOS.get(current_scenario_key, SCENARIOS["ora_00054_mode6"])
+            with _SERVER_LOCK:
+                scen_key = current_scenario_key
+            scenario_info = SCENARIOS.get(scen_key, SCENARIOS["ora_00054_mode6"])
             monitor = PipelineMonitor(simulated_scenario=scenario_info.get("lock_scenario", "stage2_stalled"))
             registry = monitor.get_instance_registry(instance_id=scenario_info["instance_id"])
             stages = monitor.get_pipeline_stages_telemetry()
@@ -88,7 +102,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
             self._send_json({
                 "scenario": scenario_info,
-                "scenario_key": current_scenario_key,
+                "scenario_key": scen_key,
                 "registry": vars(registry),
                 "stages": stages,
                 "quarantine_records": quarantine
@@ -103,7 +117,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             })
 
         elif path == "/api/locks":
-            scenario_info = SCENARIOS.get(current_scenario_key, SCENARIOS["ora_00054_mode6"])
+            with _SERVER_LOCK:
+                scen_key = current_scenario_key
+            scenario_info = SCENARIOS.get(scen_key, SCENARIOS["ora_00054_mode6"])
             engine = LockDiagnosticsEngine(simulated_scenario=scenario_info.get("lock_scenario", "ora_00054_mode6"))
             telemetry = engine.execute_hierarchical_lock_query()
             root = engine.isolate_root_blocker(telemetry)
@@ -114,39 +130,39 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             })
 
         elif path == "/api/state":
-            self._send_json({"state": last_graph_state})
+            with _SERVER_LOCK:
+                snapshot = dict(last_graph_state)
+            self._send_json({"state": snapshot})
 
         else:
-            # Direct static file serving with in-memory caching to eliminate disk I/O
+            # Direct static file serving with bounded LRU memory caching
             clean_path = path.lstrip('/')
             if not clean_path:
                 clean_path = "index.html"
 
-            if clean_path in _STATIC_CACHE:
-                content, content_type = _STATIC_CACHE[clean_path]
-            else:
-                file_path = os.path.join(PUBLIC_DIR, clean_path)
-                if not os.path.exists(file_path):
-                    # Fallback to web directory
-                    file_path = os.path.join(os.path.dirname(__file__), clean_path)
-
-                if os.path.exists(file_path) and os.path.isfile(file_path):
-                    content_type = "text/html; charset=utf-8"
-                    if file_path.endswith(".css"):
-                        content_type = "text/css; charset=utf-8"
-                    elif file_path.endswith(".js"):
-                        content_type = "application/javascript; charset=utf-8"
-                    elif file_path.endswith(".json"):
-                        content_type = "application/json; charset=utf-8"
-                    elif file_path.endswith(".svg"):
-                        content_type = "image/svg+xml"
-
-                    with open(file_path, "rb") as f:
-                        content = f.read()
-                    _STATIC_CACHE[clean_path] = (content, content_type)
+            with _SERVER_LOCK:
+                if clean_path in _STATIC_CACHE:
+                    _STATIC_CACHE.move_to_end(clean_path)
+                    content, content_type = _STATIC_CACHE[clean_path]
                 else:
-                    self.send_error(404, f"File not found: {path}")
-                    return
+                    file_path = os.path.join(PUBLIC_DIR, clean_path)
+                    if not os.path.exists(file_path):
+                        file_path = os.path.join(os.path.dirname(__file__), clean_path)
+
+                    if os.path.exists(file_path) and os.path.isfile(file_path):
+                        guessed_type, _ = mimetypes.guess_type(clean_path)
+                        content_type = guessed_type or "text/html; charset=utf-8"
+                        file_size = os.path.getsize(file_path)
+                        with open(file_path, "rb") as f:
+                            content = f.read()
+
+                        if file_size <= MAX_STATIC_FILE_SIZE:
+                            if len(_STATIC_CACHE) >= MAX_STATIC_CACHE_ENTRIES:
+                                _STATIC_CACHE.popitem(last=False)
+                            _STATIC_CACHE[clean_path] = (content, content_type)
+                    else:
+                        self.send_error(404, f"File not found: {path}")
+                        return
 
             self.send_response(200)
             self.send_header("Content-Type", content_type)
@@ -170,10 +186,11 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/scenario/load":
             key = req_data.get("key", "ora_00054_mode6")
             if key in SCENARIOS:
-                current_scenario_key = key
-                thread_counter += 1
-                active_graph = create_ascp_diagnostic_graph()
-                last_graph_state = {}
+                with _SERVER_LOCK:
+                    current_scenario_key = key
+                    thread_counter += 1
+                    active_graph = create_ascp_diagnostic_graph()
+                    last_graph_state = {}
                 self._send_json({"success": True, "loaded_scenario": SCENARIOS[key]})
             else:
                 self._send_json({"error": "Unknown scenario"}, 400)
@@ -181,27 +198,32 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/parse-log":
             log_text = req_data.get("log_text", "")
             if not log_text:
-                # Use current scenario log if none provided
-                log_text = "\n".join(SCENARIOS[current_scenario_key]["logs"])
+                with _SERVER_LOCK:
+                    scen_key = current_scenario_key
+                log_text = "\n".join(SCENARIOS[scen_key]["logs"])
+            max_lines = req_data.get("max_lines", 500)
             parser = DrainLogParser()
-            parsed_results = parser.parse_log_text(log_text)
+            parsed_results = parser.parse_log_text(log_text, max_lines=max_lines)
             self._send_json({"results": parsed_results, "count": len(parsed_results)})
 
         elif path == "/api/diagnose":
             action = req_data.get("action")  # e.g., "RESUME" or "START"
-            thread_id = f"web-thread-{thread_counter}"
+            with _SERVER_LOCK:
+                curr_graph = active_graph
+                thread_id = f"web-thread-{thread_counter}"
+                scen_key = current_scenario_key
 
             if action == "RESUME":
                 approved = req_data.get("approved", True)
                 notes = req_data.get("notes", "Approved via Web Dashboard")
                 resume_cmd = Command(resume={"approved": approved, "dba_user": "OPERATOR", "notes": notes})
-                state = active_graph.invoke(
+                state = curr_graph.invoke(
                     config={"configurable": {"thread_id": thread_id}},
                     resume_command=resume_cmd
                 )
             else:
-                raw_logs = SCENARIOS[current_scenario_key]["logs"]
-                state = active_graph.invoke(
+                raw_logs = SCENARIOS[scen_key]["logs"]
+                state = curr_graph.invoke(
                     initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": raw_logs},
                     config={"configurable": {"thread_id": thread_id}}
                 )
@@ -214,11 +236,13 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     "content": getattr(msg, "content", str(msg))
                 })
 
-            last_graph_state = dict(state)
-            last_graph_state["messages"] = serialized_msgs
+            with _SERVER_LOCK:
+                last_graph_state = dict(state)
+                last_graph_state["messages"] = serialized_msgs
+                resp_state = dict(last_graph_state)
 
             self._send_json({
-                "state": last_graph_state,
+                "state": resp_state,
                 "interrupted": state.get("interrupted", False),
                 "interrupt_payload": state.get("interrupt_payload"),
                 "completed": state.get("completed", False)
@@ -246,9 +270,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "Endpoint not found"}, 404)
 
 def run_server(port: int = 8080):
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), ASCPDiagnosticHandler) as httpd:
-        print(f"[+] ASCP Diagnostic Web Dashboard running on http://localhost:{port}")
+    with ThreadedASCPDiagnosticServer(("", port), ASCPDiagnosticHandler) as httpd:
+        print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://localhost:{port}")
         httpd.serve_forever()
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Executes hierarchical lock queries to isolate root blocker sessions holding Mode
 on ASCP staging tables (MSC_ST_*).
 """
 
+import time
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional
 
@@ -83,6 +84,9 @@ class LockDiagnosticsEngine:
         except ImportError:
             self._oracledb = None
         self._async_pool = None
+        self._cached_telemetry: Optional[List[Dict[str, Any]]] = None
+        self._cache_timestamp: float = 0.0
+        self.cache_ttl: float = 5.0
 
     async def get_async_pool(self):
         """Initializes or returns python-oracledb asynchronous connection pool in thin mode."""
@@ -142,15 +146,25 @@ class LockDiagnosticsEngine:
                 pass
         return self._generate_simulated_lock_telemetry()
 
-    def execute_hierarchical_lock_query(self) -> List[Dict[str, Any]]:
-        """Executes hierarchical query or falls back to simulated database telemetry."""
+    def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> List[Dict[str, Any]]:
+        """Executes hierarchical query or returns TTL-cached telemetry to prevent database hammering."""
+        now = time.time()
+        if not bypass_cache and self._cached_telemetry is not None and (now - self._cache_timestamp) < self.cache_ttl:
+            return self._cached_telemetry
+
         if self._oracledb and self.config and not getattr(self.config, "use_simulation", True):
             try:
-                return self._query_live_oracle()
-            except Exception as e:
+                res = self._query_live_oracle()
+                self._cached_telemetry = res
+                self._cache_timestamp = now
+                return res
+            except Exception:
                 # Fallback to simulated telemetry if database is unreachable in test environment
                 pass
-        return self._generate_simulated_lock_telemetry()
+        res = self._generate_simulated_lock_telemetry()
+        self._cached_telemetry = res
+        self._cache_timestamp = now
+        return res
 
     def _query_live_oracle(self) -> List[Dict[str, Any]]:
         """Executes hierarchical lock query against live Oracle instance via thin driver."""
