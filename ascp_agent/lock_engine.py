@@ -87,6 +87,9 @@ def get_sql_query(query_id: str, **kwargs) -> str:
         return raw.format(**kwargs)
     return raw
 
+from ascp_agent.db import get_oracle_pool, OracleConnectionPool
+
+
 @dataclass
 class LockTelemetryItem:
     lock_depth: int
@@ -115,118 +118,25 @@ class LockDiagnosticsEngine:
     def __init__(self, connection_config: Optional[Any] = None, simulated_scenario: Optional[str] = "ora_00054_mode6"):
         self.config = connection_config
         self.simulated_scenario = simulated_scenario
-        self._oracledb = None
-        self._init_driver()
-
-    def _init_driver(self):
-        """Attempt to load native thin oracledb driver if installed."""
-        try:
-            import importlib
-            self._oracledb = importlib.import_module("oracledb")
-        except ImportError:
-            self._oracledb = None
-        self._async_pool = None
+        cfg = connection_config if hasattr(connection_config, "host") else None
+        self.pool: OracleConnectionPool = get_oracle_pool(cfg)
         self._cached_telemetry: Optional[List[Dict[str, Any]]] = None
         self._cache_timestamp: float = 0.0
         self.cache_ttl: float = 5.0
 
     async def get_async_pool(self):
         """Initializes or returns python-oracledb asynchronous connection pool in thin mode."""
-        if self._async_pool is None and self._oracledb and self.config and not getattr(self.config, "use_simulation", True):
-            try:
-                # python-oracledb defaults to Thin mode (no Oracle Client libraries required)
-                self._async_pool = await self._oracledb.create_pool_async(
-                    user=self.config.username,
-                    password=self.config.password,
-                    host=self.config.host,
-                    port=self.config.port,
-                    service_name=self.config.service_name,
-                    min=1,
-                    max=5,
-                    increment=1
-                )
-            except Exception:
-                self._async_pool = None
-        return self._async_pool
+        if not self.pool.is_simulation:
+            await self.pool.initialize_async_pool()
+            return self.pool._async_pool
+        return None
 
-    async def execute_hierarchical_lock_query_async(self) -> List[Dict[str, Any]]:
-        """Executes non-blocking async hierarchical query via async connection pool or simulation fallback."""
-        pool = await self.get_async_pool()
-        if pool:
-            try:
-                async with pool.acquire() as conn:
-                    async with conn.cursor() as cursor:
-                        await cursor.execute(HIERARCHICAL_LOCK_SQL)
-                        cols = [c[0].lower() for c in cursor.description]
-                        rows = await cursor.fetchall()
-                        results = []
-                        for row in rows:
-                            row_dict = dict(zip(cols, row))
-                            locked_mode = row_dict.get("locked_mode", 0) or 0
-                            mode_text, impact = LOCK_MODE_MAPPING.get(locked_mode, ("UNKNOWN", "Undefined mode."))
-                            item = LockTelemetryItem(
-                                lock_depth=row_dict.get("lock_depth", 1),
-                                is_blocked_leaf=row_dict.get("is_blocked_leaf", 1),
-                                sid=row_dict.get("sid", 0),
-                                serial_number=row_dict.get("serial_number", 0),
-                                oracle_username=row_dict.get("oracle_username", "APPS"),
-                                os_user_name=row_dict.get("os_user_name", "applmgr"),
-                                os_process_id=str(row_dict.get("os_process_id", "")),
-                                module=row_dict.get("module", ""),
-                                action=row_dict.get("action", ""),
-                                blocking_session=row_dict.get("blocking_session"),
-                                object_id=row_dict.get("object_id"),
-                                object_name=row_dict.get("object_name", "UNKNOWN"),
-                                locked_mode=locked_mode,
-                                locked_mode_text=mode_text,
-                                operational_impact=impact,
-                                current_sql_text=row_dict.get("current_sql_text", "")
-                            )
-                            results.append(item.to_dict())
-                        return results
-            except Exception:
-                pass
-        return self._generate_simulated_lock_telemetry()
-
-    def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> List[Dict[str, Any]]:
-        """Executes hierarchical query or returns TTL-cached telemetry to prevent database hammering."""
-        now = time.time()
-        if not bypass_cache and self._cached_telemetry is not None and (now - self._cache_timestamp) < self.cache_ttl:
-            return self._cached_telemetry
-
-        if self._oracledb and self.config and not getattr(self.config, "use_simulation", True):
-            try:
-                res = self._query_live_oracle()
-                self._cached_telemetry = res
-                self._cache_timestamp = now
-                return res
-            except Exception:
-                # Fallback to simulated telemetry if database is unreachable in test environment
-                pass
-        res = self._generate_simulated_lock_telemetry()
-        self._cached_telemetry = res
-        self._cache_timestamp = now
-        return res
-
-    def _query_live_oracle(self) -> List[Dict[str, Any]]:
-        """Executes hierarchical lock query against live Oracle instance via thin driver."""
+    def _map_query_rows(self, dict_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Maps raw row dictionaries to structured LockTelemetryItem dictionaries."""
         results = []
-        conn = self._oracledb.connect(
-            user=self.config.username,
-            password=self.config.password,
-            host=self.config.host,
-            port=self.config.port,
-            service_name=self.config.service_name
-        )
-        cursor = conn.cursor()
-        cursor.execute(HIERARCHICAL_LOCK_SQL)
-        cols = [c[0].lower() for c in cursor.description]
-
-        for row in cursor.fetchall():
-            row_dict = dict(zip(cols, row))
+        for row_dict in dict_rows:
             locked_mode = row_dict.get("locked_mode", 0) or 0
             mode_text, impact = LOCK_MODE_MAPPING.get(locked_mode, ("UNKNOWN", "Undefined mode."))
-            
             item = LockTelemetryItem(
                 lock_depth=row_dict.get("lock_depth", 1),
                 is_blocked_leaf=row_dict.get("is_blocked_leaf", 1),
@@ -246,10 +156,40 @@ class LockDiagnosticsEngine:
                 current_sql_text=row_dict.get("current_sql_text", "")
             )
             results.append(item.to_dict())
-
-        cursor.close()
-        conn.close()
         return results
+
+    async def execute_hierarchical_lock_query_async(self) -> List[Dict[str, Any]]:
+        """Executes non-blocking async hierarchical query via async connection pool or simulation fallback."""
+        if not self.pool.is_simulation:
+            try:
+                res = await self.pool.execute_query_async(HIERARCHICAL_LOCK_SQL)
+                if not res.is_simulated and res.rows:
+                    return self._map_query_rows(res.to_dicts())
+            except Exception:
+                pass
+        return self._generate_simulated_lock_telemetry()
+
+    def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> List[Dict[str, Any]]:
+        """Executes hierarchical query or returns TTL-cached telemetry to prevent database hammering."""
+        now = time.time()
+        if not bypass_cache and self._cached_telemetry is not None and (now - self._cache_timestamp) < self.cache_ttl:
+            return self._cached_telemetry
+
+        if not self.pool.is_simulation:
+            try:
+                res = self.pool.execute_query(HIERARCHICAL_LOCK_SQL)
+                if not res.is_simulated and res.rows:
+                    mapped = self._map_query_rows(res.to_dicts())
+                    self._cached_telemetry = mapped
+                    self._cache_timestamp = now
+                    return mapped
+            except Exception:
+                pass
+
+        res = self._generate_simulated_lock_telemetry()
+        self._cached_telemetry = res
+        self._cache_timestamp = now
+        return res
 
     def _generate_simulated_lock_telemetry(self) -> List[Dict[str, Any]]:
         """Simulate hierarchical lock scenarios for ASCP collections."""

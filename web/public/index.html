@@ -53,6 +53,33 @@
     </div>
   </header>
 
+  <!-- Scenario Quick Bar: One-Click Failure Catalog Presets -->
+  <div class="scenario-quick-bar-wrapper">
+    <div class="quick-bar-inner">
+      <span class="quick-bar-title">EBS FAILURE CATALOG PRESETS:</span>
+      <div class="quick-bar-presets" id="scenarioPresets">
+        <button class="preset-chip active" data-scenario="ora_00054_mode6" title="Mode 6 Exclusive Lock Contention">
+          <span class="chip-code">ORA-00054</span> TM Mode 6 Lock
+        </button>
+        <button class="preset-chip" data-scenario="ora_00001_unique" title="Surrogate Key Collision">
+          <span class="chip-code">ORA-00001</span> Unique Collision
+        </button>
+        <button class="preset-chip" data-scenario="ora_14098_partition" title="Partition Exchange Index Mismatch">
+          <span class="chip-code">ORA-14098</span> Index Mismatch
+        </button>
+        <button class="preset-chip" data-scenario="ora_02478_pipe_stall" title="Segment Max Extents & DBMS_PIPE Deadlock">
+          <span class="chip-code">ORA-02478</span> Pipe Max Extents
+        </button>
+        <button class="preset-chip" data-scenario="ora_12571_link_drop" title="Snapshot DB Link Packet Failure">
+          <span class="chip-code">ORA-12571</span> DB Link Failure
+        </button>
+        <button class="preset-chip healthy" data-scenario="healthy_pipeline" title="Healthy Baseline Run">
+          <span class="chip-code green">PASS</span> Healthy Baseline
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Main Container -->
   <main class="dashboard-container">
     <!-- Row 1: Dual-Stage Architecture Pipeline Visualizer -->
@@ -225,6 +252,13 @@
             </svg>
             Tokenize Logs with Drain
           </button>
+          <button class="btn btn-stream" id="btnStreamLogs" title="Stream raw EBS worker logs line-by-line with real-time Drain parsing">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="2"></circle>
+              <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path>
+            </svg>
+            <span id="streamLogsText">Stream Logs Live</span>
+          </button>
         </div>
       </section>
 
@@ -235,11 +269,53 @@
             <span class="panel-badge orange">Oracle Dynamic Performance Views</span>
             <h2>Hierarchical Root Blocker Introspection</h2>
           </div>
-          <span class="sql-badge">CONNECT BY PRIOR s.sid = s.blocking_session</span>
+          <div class="lock-panel-actions">
+            <div class="view-toggle-group">
+              <button class="view-toggle-btn active" id="btnViewSvgTree" title="Interactive Visual SVG Lock Tree">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="5" r="3"></circle>
+                  <circle cx="6" cy="19" r="3"></circle>
+                  <circle cx="18" cy="19" r="3"></circle>
+                  <path d="M12 8v4m-6 4l6-4 6 4"></path>
+                </svg>
+                Visual Tree
+              </button>
+              <button class="view-toggle-btn" id="btnViewCardList" title="Tabular Detailed Card View">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                  <line x1="3" y1="9" x2="21" y2="9"></line>
+                  <line x1="9" y1="21" x2="9" y2="9"></line>
+                </svg>
+                Card List
+              </button>
+            </div>
+            <span class="sql-badge">CONNECT BY PRIOR s.sid = s.blocking_session</span>
+          </div>
         </div>
 
-        <!-- Lock Hierarchy Tree Container -->
-        <div class="lock-hierarchy-container" id="lockTreeContainer">
+        <!-- Interactive SVG Lock Tree Visualizer -->
+        <div class="lock-svg-container" id="lockSvgContainer">
+          <svg id="lockTreeSvg" class="lock-tree-svg" viewBox="0 0 680 260" preserveAspectRatio="xMidYMid meet">
+            <!-- Dynamic SVG nodes and curved paths rendered via app.js -->
+          </svg>
+
+          <!-- Interactive Node Inspector Drawer / Popover -->
+          <div class="node-inspector-drawer hidden" id="nodeInspectorDrawer">
+            <div class="inspector-header">
+              <div class="inspector-title-group">
+                <span class="pulse-dot stalled" id="inspectorDot"></span>
+                <strong id="inspectorTitle">Session 412: Root Blocker</strong>
+              </div>
+              <button class="inspector-close" id="btnCloseInspector">&times;</button>
+            </div>
+            <div class="inspector-body" id="inspectorBody">
+              <!-- Dynamically populated on node click -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Lock Hierarchy Tree Container (Card List) -->
+        <div class="lock-hierarchy-container hidden" id="lockTreeContainer">
           <!-- Populated dynamically via JS -->
         </div>
 
@@ -266,7 +342,10 @@
             <span class="panel-badge cyan">Drain Algorithmic Engine</span>
             <h2>Structured Log Templates &amp; Parameter Vectors</h2>
           </div>
-          <span class="tree-depth-label">Fixed-Depth Parse Tree (Depth: 4)</span>
+          <div class="drain-header-stats">
+            <span class="stream-stat-badge" id="drainStreamStats">Depth: 4 | Tree Ready</span>
+            <span class="tree-depth-label">Fixed-Depth Parse Tree</span>
+          </div>
         </div>
 
         <div class="drain-output-box" id="drainResultsContainer">
