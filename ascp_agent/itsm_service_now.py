@@ -74,6 +74,33 @@ class ServiceNowClient:
             }
         }
 
+    def build_incident_payload_from_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Convenience method that serializes a DiagnosticState dictionary into a compliant ServiceNow Incident payload."""
+        from ascp_agent.remediation import format_recovery_command_block
+        target_table = state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")
+        failed_phase = state.get("context", {}).get("failed_phase", "LOAD")
+        domain = state.get("failure_domain", "DATABASE_LOCK")
+        confidence = state.get("confidence_score", 0.0)
+        risk = state.get("risk_level", "HIGH")
+        action = state.get("remediation_action", "KILL_SESSION")
+        blocker = next((x for x in state.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})
+        instance_id = state.get("context", {}).get("instance_id", 1001)
+
+        recovery_cmd = format_recovery_command_block(instance_id=instance_id, instance_code="PRD1", validation="N")
+
+        return self.build_incident_payload(
+            short_description=f"ASCP Collection Failure: {failed_phase} phase on {target_table}",
+            description=f"Autonomous ASCP Diagnostic Agent detected {domain} on {target_table}. Confidence: {confidence:.1f}%.",
+            pipeline_stage="Stage 2: Planning ODS Load (MSCPDC)",
+            instance_id=instance_id,
+            affected_staging_objects=[target_table],
+            root_blocker_session=blocker,
+            drain_log_templates=state.get("log_templates", []),
+            recommended_remediation=f"Execute {action} and apply recovery command: {recovery_cmd}",
+            agent_reasoning_trace=f"Domain: {domain}, Confidence: {confidence:.1f}%, Risk: {risk}.",
+            lock_hierarchy=state.get("lock_telemetry", [])
+        )
+
     def get_oauth_token_endpoint(self) -> str:
         """Dynamically constructs instance-specific OAuth token endpoint."""
         base_url = self.config.instance_url.rstrip("/") if self.config.instance_url else "https://instance.service-now.com"

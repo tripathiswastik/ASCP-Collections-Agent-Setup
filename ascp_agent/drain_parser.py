@@ -278,3 +278,8 @@ class DrainLogParser:
         if max_lines and len(lines) > max_lines:
             lines = lines[-max_lines:]
         return list(self.parse_log_stream(lines, max_lines=max_lines))
+
+    def parse_file(self, filepath: str, max_lines: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Standardized file parser routing file contents directly through parse_log_text."""
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            return self.parse_log_text(f.read(), max_lines=max_lines)

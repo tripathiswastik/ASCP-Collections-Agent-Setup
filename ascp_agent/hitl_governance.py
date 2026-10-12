@@ -118,6 +118,14 @@ class HITLGovernanceEngine:
     ) -> Dict[str, Any]:
         """Constructs structured approval request payload for HITL gates."""
         rule = HITLGovernanceEngine.evaluate_action_risk(action)
+        from ascp_agent.remediation import format_kill_session_sql, format_purge_staging_sql
+        if action == "KILL_SESSION" and target_sid and target_serial:
+            rec_sql = format_kill_session_sql(target_sid, target_serial)
+        elif action == "CMCLEAN_EXEC":
+            rec_sql = "START cmclean.sql;"
+        else:
+            rec_sql = format_purge_staging_sql()
+
         return {
             "approval_required": rule.requires_mandatory_approval,
             "risk_tier": rule.risk_tier,
@@ -129,7 +137,5 @@ class HITLGovernanceEngine:
             "lock_mode": lock_mode,
             "description": rule.description,
             "reasoning": reasoning or f"Agent identified {action} as critical remediation step to unblock ASCP pipeline.",
-            "recommended_sql": f"ALTER SYSTEM KILL SESSION '{target_sid},{target_serial}' IMMEDIATE;" if action == "KILL_SESSION" else (
-                "START cmclean.sql;" if action == "CMCLEAN_EXEC" else f"EXEC MSC_CL_PULL.PURGE_STAGING_TABLES_SUB();"
-            )
+            "recommended_sql": rec_sql
         }

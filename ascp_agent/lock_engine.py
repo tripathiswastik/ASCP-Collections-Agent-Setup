@@ -45,6 +45,48 @@ START WITH s.blocking_session IS NULL
        AND s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
 ORDER BY LEVEL ASC;"""
 
+SQL_QUERY_REGISTRY: Dict[str, str] = {
+    "HIERARCHICAL_LOCK_TREE": HIERARCHICAL_LOCK_SQL,
+    "ORA_00054_LOCK_LOOKUP": (
+        "SELECT lo.session_id AS sid, s.serial#, lo.locked_mode, do.object_name "
+        "FROM v$locked_object lo "
+        "JOIN dba_objects do ON lo.object_id = do.object_id "
+        "JOIN v$session s ON lo.session_id = s.sid "
+        "WHERE do.object_name LIKE :table_pattern"
+    ),
+    "ST_STATUS_REGISTRY_CHECK": (
+        "SELECT instance_id, instance_code, st_status, last_collection_date "
+        "FROM msc_apps_instances WHERE instance_id = :instance_id"
+    ),
+    "SESSION_UNDO_VOLUME_CHECK": (
+        "SELECT s.sid, s.serial#, t.used_urec, t.used_ublk, t.start_time "
+        "FROM v$session s "
+        "JOIN v$transaction t ON s.taddr = t.addr "
+        "WHERE s.sid = :sid"
+    ),
+    "ORA_14098_INDEX_CHECK": (
+        "SELECT index_name, partition_name, status "
+        "FROM dba_ind_partitions WHERE table_name = :table_name"
+    ),
+    "DBMS_PIPE_STATUS_CHECK": (
+        "SELECT name, maxsize, current_size "
+        "FROM v$db_pipes WHERE name LIKE 'MSC_PIPE_%'"
+    ),
+    "KILL_SESSION": "ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE;",
+    "PURGE_STAGING": "BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => :instance_id, p_validation => 'N'); END;",
+    "RESET_REGISTRY": "UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = :instance_id; COMMIT;",
+    "ALIGN_INDEXES": "EXEC MSC_CL_EXCHANGE_PARTTN.ALIGN_INDEX_DEFS('{table_name}');",
+    "PURGE_PIPE": "EXEC DBMS_PIPE.PURGE('MSC_PIPE_{inst}');",
+    "REFRESH_SNAPSHOT": "EXEC DBMS_SNAPSHOT.REFRESH('{mview_name}', 'F');"
+}
+
+def get_sql_query(query_id: str, **kwargs) -> str:
+    """Retrieve SQL query template by identifier, optionally formatting with parameters."""
+    raw = SQL_QUERY_REGISTRY.get(query_id, "")
+    if kwargs and raw:
+        return raw.format(**kwargs)
+    return raw
+
 @dataclass
 class LockTelemetryItem:
     lock_depth: int

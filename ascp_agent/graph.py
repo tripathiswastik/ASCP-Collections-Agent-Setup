@@ -12,7 +12,7 @@ from ascp_agent.state import AgentState, DiagnosticState, AIMessage, HumanMessag
 from ascp_agent.drain_parser import DrainLogParser
 from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.hitl_governance import HITLGovernanceEngine
-from ascp_agent.remediation import RemediationEngine
+from ascp_agent.remediation import RemediationEngine, format_kill_session_sql, format_purge_staging_sql, format_recovery_command_block
 from ascp_agent.itsm_service_now import ServiceNowClient
 from ascp_agent.guardrails import EnterpriseGuardrails, ExecutionCapExceededError
 from ascp_agent.schema_validator import validate_schema_node, check_validation_routing
@@ -446,6 +446,11 @@ def hitl_gate_node(state: AgentState) -> dict:
 
     # If approval is required and neither approved nor human_response evaluated yet:
     if requires_approval and not state.get("remediation_approved") and state.get("human_response") is None:
+        rec_sql = (
+            format_kill_session_sql(blocker.get("sid", 412), blocker.get("serial_number", 28419))
+            if action == "KILL_SESSION"
+            else format_purge_staging_sql()
+        )
         approval_payload = {
             "action": action,
             "risk_tier": risk,
@@ -454,7 +459,7 @@ def hitl_gate_node(state: AgentState) -> dict:
             "target_serial": blocker.get("serial_number", 28419),
             "target_object": blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")),
             "lock_mode": blocker.get("locked_mode_text", "Exclusive (X)"),
-            "recommended_sql": f"ALTER SYSTEM KILL SESSION '{blocker.get('sid', 412)},{blocker.get('serial_number', 28419)}' IMMEDIATE;" if action == "KILL_SESSION" else "EXEC MSC_CL_PULL.PURGE_STAGING_TABLES_SUB();",
+            "recommended_sql": rec_sql,
             "reasoning": f"Diagnostic confidence is {confidence:.1f}%. High-risk action '{action}' requires explicit DBA authorization."
         }
         # Pre-interrupt logic is pure and side-effect free: strictly idempotent
@@ -507,32 +512,9 @@ def hitl_gate_node(state: AgentState) -> dict:
 def servicenow_node(state: AgentState) -> dict:
     """Step 6: Enriched Incident Ticket Generation & ServiceNow ITSM Action."""
     sn_client = ServiceNowClient()
-    blocker = next((x for x in state.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})
-    action = state.get("remediation_action", "KILL_SESSION")
-    target_table = state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")
-
-    # Automated Pipeline Recovery Command (Validation = No)
-    recovery_cmd = (
-        f"CONCURRENT PROGRAM: Planning Data Collection - Purge Staging Tables\n"
-        f"PARAMETERS: Instance = PRD1 (1001), Validation = No\n"
-        f"PL/SQL EXEC: BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => 1001, p_validation => 'N'); END;\n"
-        f"REGISTRY RESET: UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = 1001;"
-    )
-
-    incident_payload = sn_client.build_incident_payload(
-        short_description=f"ASCP Collection Failure: {state.get('context', {}).get('failed_phase', 'LOAD')} phase on {target_table}",
-        description=f"Autonomous ASCP Diagnostic Agent detected {state.get('failure_domain')} on {target_table}. Confidence: {state.get('confidence_score', 0):.1f}%.",
-        pipeline_stage=f"Stage 2: Planning ODS Load (MSCPDC)",
-        instance_id=1001,
-        affected_staging_objects=[target_table],
-        root_blocker_session=blocker,
-        drain_log_templates=state.get("log_templates", []),
-        recommended_remediation=f"Execute {action} and apply recovery command: {recovery_cmd}",
-        agent_reasoning_trace=f"Domain: {state.get('failure_domain')}, Confidence: {state.get('confidence_score', 0):.1f}%, Risk: {state.get('risk_level')}.",
-        lock_hierarchy=state.get("lock_telemetry", [])
-    )
-
+    incident_payload = sn_client.build_incident_payload_from_state(state)
     incident_res = sn_client.dispatch_incident(incident_payload)
+    recovery_cmd = format_recovery_command_block(instance_id=1001, instance_code="PRD1", validation="N")
 
     return {
         "servicenow_incident": incident_res,

@@ -29,11 +29,8 @@ def cmd_parse_log(args):
         print(f"[-] File not found: {filepath}")
         sys.exit(1)
 
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-
     parser = DrainLogParser()
-    results = parser.parse_log_text(content)
+    results = parser.parse_file(filepath)
 
     print(f"\n[+] Parsed {len(results)} lines using Drain Algorithm:")
     print("-" * 80)

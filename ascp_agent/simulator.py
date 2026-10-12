@@ -89,3 +89,12 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
         "lock_scenario": "no_locks"
     }
 }
+
+def parse_scenario_logs(scenario_key: str) -> List[Dict[str, Any]]:
+    """Standardized scenario log parser routing directly through DrainLogParser."""
+    from ascp_agent.drain_parser import DrainLogParser
+    scenario = SCENARIOS.get(scenario_key)
+    if not scenario:
+        return []
+    parser = DrainLogParser()
+    return parser.parse_log_text("\n".join(scenario.get("logs", [])))

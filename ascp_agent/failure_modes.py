@@ -5,6 +5,7 @@ and technical remediation actions.
 
 from dataclasses import dataclass
 from typing import Dict, Optional, List
+from ascp_agent.lock_engine import get_sql_query
 
 @dataclass
 class FailureModeDef:
@@ -18,6 +19,7 @@ class FailureModeDef:
     remediation_procedure: str
     mos_doc_id: str
     detailed_explanation: str
+    diagnostic_query_id: str = "HIERARCHICAL_LOCK_TREE"
 
 FAILURE_CATALOG: Dict[str, FailureModeDef] = {
     "ORA-00054": FailureModeDef(
@@ -28,9 +30,10 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
         root_cause_mechanism="TM Mode 6 Exclusive lock request blocked by uncommitted third-party DML, unindexed foreign key locks, or manual lock on target staging tables.",
         recommended_action="KILL_SESSION",
         risk_tier="HIGH",
-        remediation_procedure="ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE;",
+        remediation_procedure=get_sql_query("KILL_SESSION"),
         mos_doc_id="Doc ID 223048.1 / 274853.1",
-        detailed_explanation="During Stage 1 snapshot refreshes or Stage 3 staging truncations, exclusive table locks are required. Third-party locks block workers, causing parent MSCPDP / MSCPDC to stall indefinitely."
+        detailed_explanation="During Stage 1 snapshot refreshes or Stage 3 staging truncations, exclusive table locks are required. Third-party locks block workers, causing parent MSCPDP / MSCPDC to stall indefinitely.",
+        diagnostic_query_id="ORA_00054_LOCK_LOOKUP"
     ),
     "ORA-14098": FailureModeDef(
         code="ORA-14098",
@@ -40,9 +43,10 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
         root_cause_mechanism="Structural, uniqueness, or column list mismatch between staging table indexes and target ODS base table partitioned indexes.",
         recommended_action="REBUILD_ALIGN_INDEXES",
         risk_tier="MEDIUM",
-        remediation_procedure="EXEC MSC_CL_EXCHANGE_PARTTN.ALIGN_INDEX_DEFS('{table_name}');",
+        remediation_procedure=get_sql_query("ALIGN_INDEXES"),
         mos_doc_id="Doc ID 249683.1 / 741498.1",
-        detailed_explanation="MSCPDCW workers swap staging tables directly into partitioned base tables. If index structure, compression, or column nullability diverges, Oracle aborts the exchange."
+        detailed_explanation="MSCPDCW workers swap staging tables directly into partitioned base tables. If index structure, compression, or column nullability diverges, Oracle aborts the exchange.",
+        diagnostic_query_id="ORA_14098_INDEX_CHECK"
     ),
     "ORA-02478": FailureModeDef(
         code="ORA-02478",
@@ -52,9 +56,10 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
         root_cause_mechanism="Staging tablespace segment extent limit exhausted, or orphan worker process crash causing DBMS_PIPE buffer exhaustion and IPC stall.",
         recommended_action="RESET_PIPE_AND_EXTEND_STORAGE",
         risk_tier="MEDIUM",
-        remediation_procedure="EXEC DBMS_PIPE.PURGE('MSC_PIPE_{inst}'); ALTER TABLESPACE APPS_TS_MEDIA ADD DATAFILE AUTOEXTEND ON;",
+        remediation_procedure=get_sql_query("PURGE_PIPE"),
         mos_doc_id="Doc ID 308728.1",
-        detailed_explanation="High-volume extraction runs can fill dedicated tablespaces. If pull workers abort silently, parent MSCPDP waits forever on empty DBMS_PIPE signals."
+        detailed_explanation="High-volume extraction runs can fill dedicated tablespaces. If pull workers abort silently, parent MSCPDP waits forever on empty DBMS_PIPE signals.",
+        diagnostic_query_id="DBMS_PIPE_STATUS_CHECK"
     ),
     "ORA-00001": FailureModeDef(
         code="ORA-00001",
@@ -64,9 +69,10 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
         root_cause_mechanism="Stage 3 (MSCPDCP) failed or was skipped in previous run, leaving legacy interface rows. Stage 2 surrogate key resolution collides on duplicate natural keys.",
         recommended_action="PURGE_STAGING",
         risk_tier="MEDIUM",
-        remediation_procedure="EXEC MSC_CL_PULL.PURGE_STAGING_TABLES_SUB({instance_id});",
+        remediation_procedure=get_sql_query("PURGE_STAGING"),
         mos_doc_id="Doc ID 282498.1 / 158288.1",
-        detailed_explanation="Pull workers append new rows alongside unpurged legacy records. Global surrogate key assignment generates duplicate key mappings, aborting Stage 2 ODS Load."
+        detailed_explanation="Pull workers append new rows alongside unpurged legacy records. Global surrogate key assignment generates duplicate key mappings, aborting Stage 2 ODS Load.",
+        diagnostic_query_id="ST_STATUS_REGISTRY_CHECK"
     ),
     "ORA-12571": FailureModeDef(
         code="ORA-12571",
@@ -76,9 +82,10 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
         root_cause_mechanism="Network packet transmission failure or TCP timeout across Oracle database link during MSRFWOR snapshot refresh on transactional source ERP.",
         recommended_action="RERUN_SNAPSHOT_FAST",
         risk_tier="LOW",
-        remediation_procedure="EXEC DBMS_SNAPSHOT.REFRESH('{mview_name}', 'F');",
+        remediation_procedure=get_sql_query("REFRESH_SNAPSHOT"),
         mos_doc_id="Doc ID 203893.1 / 1060933.1",
-        detailed_explanation="In centralized topologies, large snapshot delta writes over latent database links can encounter network drops, aborting MSRFWOR."
+        detailed_explanation="In centralized topologies, large snapshot delta writes over latent database links can encounter network drops, aborting MSRFWOR.",
+        diagnostic_query_id="HIERARCHICAL_LOCK_TREE"
     )
 }
 

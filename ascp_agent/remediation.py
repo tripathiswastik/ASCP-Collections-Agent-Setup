@@ -21,6 +21,39 @@ class RemediationResult:
     execution_time_ms: float
     audit_record: Dict[str, Any]
 
+def format_kill_session_sql(sid: int, serial: int) -> str:
+    """Format standardized ALTER SYSTEM KILL SESSION SQL string."""
+    return f"ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE;"
+
+def format_purge_staging_sql(instance_id: int = 1001, validation: str = "N") -> str:
+    """Format standardized PL/SQL call to purge staging tables with Validation = No."""
+    return f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {instance_id}, p_validation => '{validation}'); END;"
+
+def format_registry_reset_sql(instance_id: int = 1001, status: int = 0) -> str:
+    """Format standardized SQL statement to reset instance ST_STATUS in registry."""
+    return f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = {status} WHERE INSTANCE_ID = {instance_id}; COMMIT;"
+
+def format_align_indexes_sql(table_name: str) -> str:
+    """Format standardized index alignment procedure call for partition exchanges."""
+    return f"EXEC MSC_CL_EXCHANGE_PARTTN.ALIGN_INDEX_DEFS('{table_name}');"
+
+def format_reset_pipe_sql(instance_code: str = "PRD1") -> str:
+    """Format standardized DBMS_PIPE purge call."""
+    return f"EXEC DBMS_PIPE.PURGE('MSC_PIPE_{instance_code}');"
+
+def format_snapshot_refresh_sql(mview_name: str) -> str:
+    """Format standardized snapshot refresh procedure call."""
+    return f"EXEC DBMS_SNAPSHOT.REFRESH('{mview_name}', 'F');"
+
+def format_recovery_command_block(instance_id: int = 1001, instance_code: str = "PRD1", validation: str = "N") -> str:
+    """Build complete multi-line automated pipeline recovery command block."""
+    return (
+        f"CONCURRENT PROGRAM: Planning Data Collection - Purge Staging Tables\n"
+        f"PARAMETERS: Instance = {instance_code} ({instance_id}), Validation = {'No' if validation == 'N' else 'Yes'}\n"
+        f"PL/SQL EXEC: {format_purge_staging_sql(instance_id, validation)}\n"
+        f"REGISTRY RESET: UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id};"
+    )
+
 class RemediationEngine:
     """Executes validated remediation subroutines with safety guardrails."""
 
