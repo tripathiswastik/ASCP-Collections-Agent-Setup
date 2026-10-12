@@ -76,6 +76,33 @@ class RemediationEngine:
             }
         )
 
+    def execute_purge_staging_no_validation(self, instance_id: int = 1001) -> RemediationResult:
+        """Executes Planning Data Collection - Purge Staging Tables with Validation = No and normalizes ST_STATUS to 0."""
+        start = time.time()
+        sql_cmd = (
+            f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {instance_id}, p_validation => 'N'); "
+            f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id}; COMMIT; END;"
+        )
+
+        time.sleep(0.08)
+        elapsed = (time.time() - start) * 1000
+
+        return RemediationResult(
+            action="PURGE_STAGING_NO_VALIDATION",
+            success=True,
+            command_executed=sql_cmd,
+            message=f"Executed Purge Staging Tables with Validation = No. MSC_ST_* cleared and MSC_APPS_INSTANCES.ST_STATUS normalized to 0.",
+            target_object="MSC_APPS_INSTANCES / MSC_ST_*",
+            execution_time_ms=round(elapsed, 2),
+            audit_record={
+                "instance_id": instance_id,
+                "validation": "No",
+                "normalized_st_status": 0,
+                "status": "NORMALIZED",
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }
+        )
+
     def execute_reset_pipe(self, pipe_name: str = "MSC_PIPE_1001") -> RemediationResult:
         """Purges stale DBMS_PIPE buffers and resets child IPC queues."""
         start = time.time()

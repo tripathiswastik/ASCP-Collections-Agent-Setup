@@ -27,10 +27,26 @@ class ServiceNowClient:
         drain_log_templates: list,
         recommended_remediation: str,
         agent_reasoning_trace: str,
+        lock_hierarchy: Optional[list] = None,
         impact: str = "2",
         urgency: str = "2"
     ) -> Dict[str, Any]:
-        """Constructs compliant ServiceNow Incident JSON payload with u_diagnostic_payload."""
+        """Constructs compliant ServiceNow Incident JSON payload enriched with DBA telemetry."""
+        root = root_blocker_session or {}
+        root_sid = root.get("sid")
+        holding_sql_id = root.get("sql_id", "SQL_ID_ORA54_EXCL")
+        holding_sql_text = root.get("current_sql_text", "N/A")
+        lock_hierarchy = lock_hierarchy or ([root] if root else [])
+
+        # Build one-click DBA remediation playbook
+        playbook = {
+            "primary_action": recommended_remediation,
+            "session_kill_command": f"ALTER SYSTEM KILL SESSION '{root_sid},{root.get('serial_number')}' IMMEDIATE;" if root_sid else None,
+            "staging_purge_command": f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {instance_id}, p_validation => 'N'); END;",
+            "registry_normalization_sql": f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id}; COMMIT;",
+            "verification_query": "SELECT sid, serial#, locked_mode FROM v$locked_object lo JOIN dba_objects do ON lo.object_id = do.object_id WHERE do.object_name LIKE 'MSC_ST_%';"
+        }
+
         return {
             "short_description": short_description,
             "assignment_group": self.config.assignment_group,
@@ -40,10 +56,16 @@ class ServiceNowClient:
             "u_diagnostic_payload": {
                 "pipeline_stage": pipeline_stage,
                 "instance_id": instance_id,
+                "affected_staging_tables": affected_staging_objects,
                 "affected_staging_objects": affected_staging_objects,
-                "root_blocker_session": root_blocker_session or {},
+                "root_blocker_sid": root_sid,
+                "root_blocker_session": root,
+                "holding_sql_id": holding_sql_id,
+                "holding_sql_text": holding_sql_text,
+                "lock_duration_hierarchies": lock_hierarchy,
                 "drain_log_templates": drain_log_templates,
                 "recommended_remediation": recommended_remediation,
+                "one_click_remediation_playbook": playbook,
                 "agent_reasoning_trace": agent_reasoning_trace
             }
         }

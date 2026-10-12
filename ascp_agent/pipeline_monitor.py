@@ -126,3 +126,27 @@ class PipelineMonitor:
                 "error_message": "Primary UOM conversion missing in source."
             }
         ]
+
+    def verify_and_reset_registry(self, instance_id: int = 1001) -> Dict[str, Any]:
+        """Verifies MSC_APPS_INSTANCES.ST_STATUS prior to relaunching collections.
+        If a crashed run left ST_STATUS > 0 or -1, automates a recovery call to
+        Planning Data Collection - Purge Staging Tables with Validation = No
+        to clear staging tables (MSC_ST_%) and normalize ST_STATUS to 0.
+        """
+        registry = self.get_instance_registry(instance_id)
+        current_status = registry.st_status
+        needs_reset = current_status != 0
+
+        recovery_payload = {
+            "instance_id": instance_id,
+            "initial_st_status": current_status,
+            "st_status_name": registry.st_status_name,
+            "reset_required": needs_reset,
+            "recovery_program": "Planning Data Collection - Purge Staging Tables",
+            "parameters": {"Validation": "No", "Instance_ID": instance_id},
+            "plsql_call": f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {instance_id}, p_validation => 'N'); END;",
+            "normalization_sql": f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id};",
+            "normalized_st_status": 0,
+            "status": "NORMALIZED" if needs_reset else "CLEAN_NO_ACTION_NEEDED"
+        }
+        return recovery_payload

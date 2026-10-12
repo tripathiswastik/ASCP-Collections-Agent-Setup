@@ -36,7 +36,9 @@ class DrainLogParser:
 
     ORACLE_OBJECT_PATTERN = re.compile(r"^(MSC|MLOG\$|APPLSYS|APPS|BOM|INV|WIP|MRP|FND)_[A-Z0-9_\$]+$", re.IGNORECASE)
     DIGIT_PATTERN = re.compile(r"^\d+$")
-    ERROR_CODE_PATTERN = re.compile(r"^ORA-\d{5}:?$")
+    ERROR_CODE_PATTERN = re.compile(r"^ORA-\d{5}:?$", re.IGNORECASE)
+    MEM_ADDR_PATTERN = re.compile(r"^0x[0-9a-fA-F]+:?$")
+    THREAD_ID_PATTERN = re.compile(r"^(?:tid=\d+|thread[_-]\d+|worker[_-]\d+|pid[_-]\d+)$", re.IGNORECASE)
 
     def __init__(
         self,
@@ -53,7 +55,7 @@ class DrainLogParser:
         self.clusters: List[LogCluster] = []
 
     def _preprocess_tokens(self, line: str) -> Tuple[List[str], Dict[str, Any]]:
-        """Normalize line and extract recognized domain variables."""
+        """Normalize line and extract recognized domain variables while preserving critical ORA codes."""
         params: Dict[str, Any] = {"TARGET_OBJECTS": []}
         
         # 1. Extract bracketed timestamps e.g. [12-OCT-2025 04:12:01]
@@ -67,12 +69,30 @@ class DrainLogParser:
         if sid_match:
             params["SID"] = int(sid_match.group(1))
 
+        # 3. Mask memory addresses e.g. at 0x7fff89ab10cd
+        mem_match = re.findall(r"0x[0-9a-fA-F]+", line)
+        if mem_match:
+            params["MEM_ADDRESSES"] = mem_match
+            for addr in mem_match:
+                line = line.replace(addr, "<MEM_ADDR>")
+
+        # 4. Mask worker thread/PID indicators e.g. tid=8924 or Thread-12
+        line = re.sub(r"\btid=\d+\b", "<THREAD_ID>", line, flags=re.IGNORECASE)
+        line = re.sub(r"\bThread-\d+\b", "<THREAD_ID>", line, flags=re.IGNORECASE)
+
         tokens = line.strip().split()
         normalized_tokens = []
 
-        for i, token in enumerate(tokens):
+        for token in tokens:
             clean = token.strip("(),;\"'.:")
-            if self.ORACLE_OBJECT_PATTERN.match(clean):
+            # Preserve critical error codes verbatim (do not mask as digits or generic tokens)
+            if self.ERROR_CODE_PATTERN.match(clean):
+                normalized_tokens.append(token)
+            elif self.MEM_ADDR_PATTERN.match(clean) or clean == "<MEM_ADDR>":
+                normalized_tokens.append("<MEM_ADDR>")
+            elif self.THREAD_ID_PATTERN.match(clean) or clean == "<THREAD_ID>":
+                normalized_tokens.append("<THREAD_ID>")
+            elif self.ORACLE_OBJECT_PATTERN.match(clean):
                 params["TARGET_OBJECTS"].append(clean)
                 normalized_tokens.append("<TARGET_OBJECT>")
             elif self.DIGIT_PATTERN.match(clean) and token != "[<TIMESTAMP>]":

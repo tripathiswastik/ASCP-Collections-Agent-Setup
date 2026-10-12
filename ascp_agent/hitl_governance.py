@@ -71,6 +71,14 @@ GOVERNANCE_RULES: Dict[str, HITLGovernanceRule] = {
         requires_mandatory_approval=True,
         requires_dry_run_validation=False,
         description="Clears orphan worker pipes and resets buffer allocations."
+    ),
+    "CMCLEAN_EXEC": HITLGovernanceRule(
+        risk_tier="HIGH",
+        action_type="Concurrent Manager Cleanup & Process Termination",
+        target_object="FND_CONCURRENT_REQUESTS / FND_CONCURRENT_PROCESSES",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=True,
+        description="Mandatory HITL Gate. Executes cmclean.sql to abort hung concurrent managers. Requires explicit DBA sign-off."
     )
 }
 
@@ -83,6 +91,21 @@ class HITLGovernanceEngine:
             action,
             HITLGovernanceRule("HIGH", action, "UNKNOWN", True, True, "Uncataloged action defaulted to HIGH risk.")
         )
+
+    @staticmethod
+    def evaluate_governance_routing(action: str, confidence_score: float) -> str:
+        """Determines routing policy:
+        - Low-risk read-only diagnostics with confidence >= 85.0% route directly to ServiceNow ticket creation.
+        - High-risk or destructive actions (KILL_SESSION, CMCLEAN_EXEC) must invoke interrupt() for DBA sign-off.
+        """
+        rule = HITLGovernanceEngine.evaluate_action_risk(action)
+        if rule.risk_tier == "HIGH" or action in ["KILL_SESSION", "CMCLEAN_EXEC"]:
+            return "MANDATORY_HITL_INTERRUPT"
+        if rule.risk_tier == "LOW" and confidence_score >= 85.0:
+            return "AUTOMATED_SERVICENOW_DISPATCH"
+        if rule.risk_tier == "MEDIUM":
+            return "CONDITIONAL_INTERRUPT" if confidence_score < 85.0 else "AUTOMATED_EXECUTION"
+        return "MANDATORY_HITL_INTERRUPT"
 
     @staticmethod
     def format_approval_payload(
@@ -106,5 +129,7 @@ class HITLGovernanceEngine:
             "lock_mode": lock_mode,
             "description": rule.description,
             "reasoning": reasoning or f"Agent identified {action} as critical remediation step to unblock ASCP pipeline.",
-            "recommended_sql": f"ALTER SYSTEM KILL SESSION '{target_sid},{target_serial}' IMMEDIATE;" if action == "KILL_SESSION" else f"EXEC MSC_CL_PULL.PURGE_STAGING_TABLES_SUB();"
+            "recommended_sql": f"ALTER SYSTEM KILL SESSION '{target_sid},{target_serial}' IMMEDIATE;" if action == "KILL_SESSION" else (
+                "START cmclean.sql;" if action == "CMCLEAN_EXEC" else f"EXEC MSC_CL_PULL.PURGE_STAGING_TABLES_SUB();"
+            )
         }

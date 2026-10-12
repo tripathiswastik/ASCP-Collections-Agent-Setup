@@ -30,5 +30,28 @@ class TestLockDiagnosticsEngine(unittest.TestCase):
             self.assertEqual(w["blocking_session"], 412)
             self.assertEqual(w["locked_mode"], 0)
 
+    def test_async_hierarchical_lock_query(self):
+        import asyncio
+        telemetry = asyncio.run(self.engine.execute_hierarchical_lock_query_async())
+        self.assertGreater(len(telemetry), 0)
+        root = self.engine.isolate_root_blocker(telemetry)
+        self.assertIsNotNone(root)
+        self.assertEqual(root["sid"], 412)
+        self.assertEqual(root["locked_mode"], 6)
+
+    def test_automated_registry_lock_reset(self):
+        from ascp_agent.pipeline_monitor import PipelineMonitor
+        from ascp_agent.remediation import RemediationEngine
+        monitor = PipelineMonitor(simulated_scenario="stage2_stalled")
+        res = monitor.verify_and_reset_registry(instance_id=1001)
+        self.assertTrue(res["reset_required"])
+        self.assertEqual(res["normalized_st_status"], 0)
+        self.assertEqual(res["parameters"]["Validation"], "No")
+
+        rem = RemediationEngine()
+        purge_res = rem.execute_purge_staging_no_validation(instance_id=1001)
+        self.assertTrue(purge_res.success)
+        self.assertEqual(purge_res.audit_record["normalized_st_status"], 0)
+
 if __name__ == "__main__":
     unittest.main()

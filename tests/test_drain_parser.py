@@ -32,5 +32,13 @@ class TestDrainLogParser(unittest.TestCase):
         results = self.parser.parse_log_text(log_dump)
         self.assertEqual(len(results), 3)
 
+    def test_thread_and_memory_masking_preserving_ora_codes(self):
+        line = "[12-OCT-2025 04:12:01]: tid=4812 Thread-9 crashed at 0x7fff89ab10cd with ORA-00054: resource busy."
+        res = self.parser.parse_line(line)
+        self.assertIn("ORA-00054:", res["template"])
+        self.assertIn("<THREAD_ID>", res["template"])
+        self.assertIn("<MEM_ADDR>", res["template"])
+        self.assertIn("0x7fff89ab10cd", res["parameters"]["MEM_ADDRESSES"])
+
 if __name__ == "__main__":
     unittest.main()
