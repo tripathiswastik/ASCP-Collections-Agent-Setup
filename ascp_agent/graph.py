@@ -19,23 +19,47 @@ from ascp_agent.schema_validator import validate_schema_node, check_validation_r
 
 END = "__END__"
 
+def _clone_state_snapshot(state: DiagnosticState) -> DiagnosticState:
+    """Fast snapshot cloning for checkpoints avoiding slow recursive copy.deepcopy."""
+    from ascp_agent.state import AgentState
+    if isinstance(state, AgentState):
+        cloned = AgentState(state)
+    elif hasattr(state, "copy"):
+        cloned = state.copy()
+    else:
+        cloned = dict(state)
+    for k, v in list(cloned.items()):
+        if isinstance(v, list):
+            cloned[k] = list(v)
+        elif isinstance(v, dict):
+            cloned[k] = dict(v)
+    return cloned
+
 class CheckpointRecord:
     """A snapshot of graph state at a super-step boundary."""
     def __init__(self, step_index: int, state: DiagnosticState, next_node: str):
         self.step_index = step_index
-        self.state = copy.deepcopy(state)
+        self.state = _clone_state_snapshot(state)
         self.next_node = next_node
         self.timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 class MemorySaver:
-    """In-memory checkpointer supporting state snapshots and time-travel inspection."""
-    def __init__(self):
+    """In-memory checkpointer supporting state snapshots and time-travel inspection with bounded memory."""
+    def __init__(self, max_threads: int = 100, max_checkpoints_per_thread: int = 50):
         self.threads: Dict[str, List[CheckpointRecord]] = {}
+        self.max_threads = max_threads
+        self.max_checkpoints_per_thread = max_checkpoints_per_thread
 
     def save(self, thread_id: str, state: DiagnosticState, next_node: str) -> int:
+        if len(self.threads) > self.max_threads and thread_id not in self.threads:
+            # Evict oldest thread to prevent unbounded memory growth
+            oldest_key = next(iter(self.threads))
+            del self.threads[oldest_key]
         records = self.threads.setdefault(thread_id, [])
         step = len(records) + 1
         records.append(CheckpointRecord(step, state, next_node))
+        if len(records) > self.max_checkpoints_per_thread:
+            records.pop(0)
         return step
 
     def get_latest(self, thread_id: str) -> Optional[CheckpointRecord]:

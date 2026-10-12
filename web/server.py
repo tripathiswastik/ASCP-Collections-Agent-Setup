@@ -36,6 +36,7 @@ current_scenario_key = "ora_00054_mode6"
 active_graph = create_ascp_diagnostic_graph()
 last_graph_state: Dict[str, Any] = {}
 thread_counter = 1
+_STATIC_CACHE: Dict[str, Tuple[bytes, str]] = {}
 
 class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server):
@@ -116,37 +117,44 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"state": last_graph_state})
 
         else:
-            # Direct static file serving from PUBLIC_DIR
+            # Direct static file serving with in-memory caching to eliminate disk I/O
             clean_path = path.lstrip('/')
             if not clean_path:
                 clean_path = "index.html"
-            file_path = os.path.join(PUBLIC_DIR, clean_path)
-            if not os.path.exists(file_path):
-                # Fallback to web directory
-                file_path = os.path.join(os.path.dirname(__file__), clean_path)
 
-            if os.path.exists(file_path) and os.path.isfile(file_path):
-                content_type = "text/html; charset=utf-8"
-                if file_path.endswith(".css"):
-                    content_type = "text/css; charset=utf-8"
-                elif file_path.endswith(".js"):
-                    content_type = "application/javascript; charset=utf-8"
-                elif file_path.endswith(".json"):
-                    content_type = "application/json; charset=utf-8"
-                elif file_path.endswith(".svg"):
-                    content_type = "image/svg+xml"
-
-                with open(file_path, "rb") as f:
-                    content = f.read()
-
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(content)))
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(content)
+            if clean_path in _STATIC_CACHE:
+                content, content_type = _STATIC_CACHE[clean_path]
             else:
-                self.send_error(404, f"File not found: {path}")
+                file_path = os.path.join(PUBLIC_DIR, clean_path)
+                if not os.path.exists(file_path):
+                    # Fallback to web directory
+                    file_path = os.path.join(os.path.dirname(__file__), clean_path)
+
+                if os.path.exists(file_path) and os.path.isfile(file_path):
+                    content_type = "text/html; charset=utf-8"
+                    if file_path.endswith(".css"):
+                        content_type = "text/css; charset=utf-8"
+                    elif file_path.endswith(".js"):
+                        content_type = "application/javascript; charset=utf-8"
+                    elif file_path.endswith(".json"):
+                        content_type = "application/json; charset=utf-8"
+                    elif file_path.endswith(".svg"):
+                        content_type = "image/svg+xml"
+
+                    with open(file_path, "rb") as f:
+                        content = f.read()
+                    _STATIC_CACHE[clean_path] = (content, content_type)
+                else:
+                    self.send_error(404, f"File not found: {path}")
+                    return
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(content)
 
     def do_POST(self):
         global current_scenario_key, active_graph, last_graph_state, thread_counter

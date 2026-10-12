@@ -7,6 +7,7 @@ import json
 import uuid
 import time
 from typing import Dict, Any, Optional
+from collections import deque
 from ascp_agent.config import ServiceNowConfig
 
 class ServiceNowClient:
@@ -14,9 +15,10 @@ class ServiceNowClient:
 
     def __init__(self, config: Optional[ServiceNowConfig] = None):
         self.config = config or ServiceNowConfig()
-        self.created_incidents = []
+        self.created_incidents = deque(maxlen=200)
         self._cached_oauth_token = None
         self._token_expires_at = 0.0
+        self._session = None
 
     def build_incident_payload(
         self,
@@ -95,6 +97,12 @@ class ServiceNowClient:
         # If live HTTP dispatch is configured and dry_run is false:
         if not self.config.dry_run and self.config.instance_url:
             import requests
+            if self._session is None:
+                self._session = requests.Session()
+                adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
+                self._session.mount("https://", adapter)
+                self._session.mount("http://", adapter)
+
             url = f"{self.config.instance_url.rstrip('/')}{self.config.table_api_path}"
             token = self.get_valid_oauth_token()
             headers = {
@@ -105,7 +113,7 @@ class ServiceNowClient:
 
             for attempt in range(max_retries):
                 try:
-                    resp = requests.post(url, headers=headers, json=payload, timeout=10)
+                    resp = self._session.post(url, headers=headers, json=payload, timeout=10)
                     if resp.status_code in [200, 201]:
                         data = resp.json()
                         incident_number = data.get("result", {}).get("number", f"INC{int(time.time())}")
