@@ -96,12 +96,15 @@ document.addEventListener('DOMContentLoaded', () => {
   init();
 
   async function init() {
-    await loadScenarios();
-    await refreshTelemetry();
-    await loadLockTree();
-    await runDrainParsing();
-
     setupEventListeners();
+    try {
+      await loadScenarios();
+      await refreshTelemetry();
+      await loadLockTree();
+      await runDrainParsing();
+    } catch (err) {
+      console.error('Initialization error:', err);
+    }
   }
 
   function setupEventListeners() {
@@ -234,7 +237,12 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadScenarios() {
     try {
       const res = await apiFetch('/api/scenarios');
+      if (!res.ok) {
+        console.error('Failed to load scenarios: HTTP', res.status);
+        return;
+      }
       const data = await res.json();
+      if (!data || !Array.isArray(data.scenarios)) return;
       scenarioSelector.innerHTML = '';
       data.scenarios.forEach(sc => {
         const opt = document.createElement('option');
@@ -250,7 +258,12 @@ document.addEventListener('DOMContentLoaded', () => {
   async function refreshTelemetry() {
     try {
       const res = await apiFetch('/api/status');
+      if (!res.ok) {
+        console.error('Failed to refresh status: HTTP', res.status);
+        return;
+      }
       const data = await res.json();
+      if (!data || !data.registry) return;
 
       const reg = data.registry;
       stStatusText.textContent = `${reg.st_status_name} (${reg.st_status})`;
@@ -280,6 +293,10 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadLockTree() {
     try {
       const res = await apiFetch('/api/locks');
+      if (!res.ok) {
+        console.error('Failed to load locks: HTTP', res.status);
+        return;
+      }
       const data = await res.json();
       activeTelemetry = data.telemetry || [];
       const root = data.root_blocker;
