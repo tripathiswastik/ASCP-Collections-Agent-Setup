@@ -47,7 +47,7 @@ class TestHttpAuthAndRoles(unittest.TestCase):
         cls.httpd = ThreadedASCPDiagnosticServer(("127.0.0.1", cls.port), ASCPDiagnosticHandler)
         cls.server_thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.server_thread.start()
-        time.sleep(0.1)
+        time.sleep(0.2)
 
     @classmethod
     def tearDownClass(cls):

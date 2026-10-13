@@ -120,17 +120,37 @@ def record_audit_event(event: dict[str, Any]) -> dict[str, Any]:
         return entry
 
 
+def _extract_api_token(headers: Any) -> str | None:
+    """Extract API token from request headers (case-insensitive X-API-Token or Authorization Bearer)."""
+    for key in ("X-API-Token", "X-Api-Token", "X-api-token", "x-api-token"):
+        val = headers.get(key)
+        if val:
+            return val.strip()
+
+    auth = headers.get("Authorization") or headers.get("authorization")
+    if auth:
+        parts = auth.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1].strip()
+
+    return None
+
+
 class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server):
         super().__init__(request, client_address, server)
 
     def _authenticate(self) -> Operator | None:
-        """Return the operator identity for a valid X-API-Token header, else None."""
-        supplied = self.headers.get("X-API-Token", "").strip()
+        """Return the operator identity for a valid API token header, else None."""
+        supplied = _extract_api_token(self.headers)
         if not supplied:
             return None
         supplied_bytes = supplied.encode("utf-8")
-        active_tokens = GLOBAL_SECRET_MANAGER.get_operator_tokens() or OPERATOR_TOKENS
+
+        # Dynamically merge live module OPERATOR_TOKENS and secret manager tokens at request time
+        active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
+        active_tokens.update(OPERATOR_TOKENS)
+
         for token, val in active_tokens.items():
             if hmac.compare_digest(supplied_bytes, token.encode("utf-8")):
                 if isinstance(val, dict):
@@ -143,6 +163,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     user = str(val)
                     role = "approver"
                 return Operator(user, role=role)
+
+        masked = (supplied[:4] + "..." + supplied[-4:]) if len(supplied) > 8 else "*****"
+        logger.debug("Authentication failed for token %s; known token count=%d", masked, len(active_tokens))
         return None
 
     def _read_json_body(self) -> dict[str, Any] | None:
@@ -513,7 +536,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def run_server(port: int = 8085):
-    active_tokens = GLOBAL_SECRET_MANAGER.get_operator_tokens() or OPERATOR_TOKENS
+    active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
+    active_tokens.update(OPERATOR_TOKENS)
     if not active_tokens:
         raise SystemExit('ASCP_OPERATOR_TOKENS is not set. Example: {"<long-random-token>": "alice"}')
     with ThreadedASCPDiagnosticServer(("127.0.0.1", port), ASCPDiagnosticHandler) as httpd:
