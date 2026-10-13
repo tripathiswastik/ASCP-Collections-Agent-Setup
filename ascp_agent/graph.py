@@ -6,13 +6,14 @@ and time-travel state debugging.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import logging
 import time
 import uuid
+from collections import OrderedDict, deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ascp_agent.drain_parser import DrainLogParser
@@ -70,28 +71,39 @@ class CheckpointRecord:
 class MemorySaver:
     """In-memory checkpointer supporting state snapshots and time-travel inspection with bounded memory."""
     def __init__(self, max_threads: int = 100, max_checkpoints_per_thread: int = 50):
-        self.threads: dict[str, list[CheckpointRecord]] = {}
+        self.threads: OrderedDict[str, deque[CheckpointRecord]] = OrderedDict()
         self.max_threads = max_threads
         self.max_checkpoints_per_thread = max_checkpoints_per_thread
 
     def save(self, thread_id: str, state: DiagnosticState, next_node: str) -> int:
-        if len(self.threads) > self.max_threads and thread_id not in self.threads:
-            # Evict oldest thread to prevent unbounded memory growth
-            oldest_key = next(iter(self.threads))
-            del self.threads[oldest_key]
-        records = self.threads.setdefault(thread_id, [])
-        step = len(records) + 1
+        if len(self.threads) >= self.max_threads and thread_id not in self.threads:
+            # Deterministic LRU eviction of oldest thread
+            self.threads.popitem(last=False)
+
+        if thread_id not in self.threads:
+            self.threads[thread_id] = deque(maxlen=self.max_checkpoints_per_thread)
+        else:
+            self.threads.move_to_end(thread_id)
+
+        records = self.threads[thread_id]
+        last_step = records[-1].step_index if records else 0
+        step = last_step + 1
         records.append(CheckpointRecord(step, state, next_node))
-        if len(records) > self.max_checkpoints_per_thread:
-            records.pop(0)
         return step
 
     def get_latest(self, thread_id: str) -> CheckpointRecord | None:
-        records = self.threads.get(thread_id, [])
-        return records[-1] if records else None
+        records = self.threads.get(thread_id)
+        if records:
+            self.threads.move_to_end(thread_id)
+            return records[-1]
+        return None
 
     def get_history(self, thread_id: str) -> list[CheckpointRecord]:
-        return self.threads.get(thread_id, [])
+        records = self.threads.get(thread_id)
+        if records:
+            self.threads.move_to_end(thread_id)
+            return list(records)
+        return []
 
 def serialize_state_payload(state: Any) -> Any:
     """Recursively serializes state into JSON-safe structure preserving typed message representations."""
@@ -127,22 +139,26 @@ def deserialize_state_payload(payload: Any) -> Any:
 class PostgresSaver:
     """Durable production checkpointer storing snapshots indexed by persistent thread_id.
     Enables fault-tolerant state snapshots, time-travel debugging, and multi-turn approvals
-    across container restarts. Automatically falls back to memory persistence if PostgreSQL
-    is offline or running in standalone test environments.
+    across container restarts. Uses connection pooling when PostgreSQL is configured.
+    Automatically falls back to memory persistence if PostgreSQL is offline or unconfigured.
     """
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, min_conn: int = 1, max_conn: int = 10):
         self.dsn = dsn
-        self._memory_backup = MemorySaver()
+        self._memory_backup = MemorySaver(max_threads=100, max_checkpoints_per_thread=10)
         self._psycopg = None
-        self._init_backend()
+        self._pool = None
+        self._init_backend(min_conn, max_conn)
 
-    def _init_backend(self):
+    def _init_backend(self, min_conn: int = 1, max_conn: int = 10):
         if not self.dsn:
             return
         try:
             import psycopg2
+            from psycopg2 import pool
             self._psycopg = psycopg2
-            with psycopg2.connect(self.dsn) as conn:
+            self._pool = pool.ThreadedConnectionPool(min_conn, max_conn, self.dsn)
+            conn = self._pool.getconn()
+            try:
                 with conn.cursor() as cur:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS ascp_agent_checkpoints (
@@ -156,31 +172,57 @@ class PostgresSaver:
                         CREATE INDEX IF NOT EXISTS idx_ascp_ckpt_thread ON ascp_agent_checkpoints(thread_id);
                     """)
                 conn.commit()
-        except Exception:  # noqa: BLE001 -- fallback to in-memory checkpointer if PostgreSQL is offline
+            finally:
+                self._pool.putconn(conn)
+        except Exception as exc:  # noqa: BLE001 -- fallback to in-memory checkpointer if PostgreSQL is offline
+            logger.warning("Postgres backend initialization failed (%s); operating in in-memory fallback mode.", exc)
+            if self._pool is not None:
+                try:
+                    self._pool.closeall()
+                except Exception as close_exc:  # noqa: BLE001
+                    logger.debug("Error while closing connection pool: %s", close_exc)
+                self._pool = None
             self._psycopg = None
 
     def save(self, thread_id: str, state: DiagnosticState, next_node: str) -> int:
-        step = self._memory_backup.save(thread_id, state, next_node)
-        if self._psycopg and self.dsn:
+        if self._pool is not None and self._psycopg is not None:
+            conn = None
             try:
-                serialized = serialize_state_payload(dict(state))
-                with self._psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                conn = self._pool.getconn()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COALESCE(MAX(step_index), 0) + 1 FROM ascp_agent_checkpoints WHERE thread_id = %s",
+                        (thread_id,)
+                    )
+                    step = cur.fetchone()[0]
+                    serialized = serialize_state_payload(dict(state))
+                    from psycopg2.extras import Json
                     cur.execute(
                         "INSERT INTO ascp_agent_checkpoints (thread_id, step_index, state_payload, next_node) VALUES (%s, %s, %s, %s)",
-                        (thread_id, step, json.dumps(serialized), next_node)
+                        (thread_id, step, Json(serialized), next_node)
                     )
-                    conn.commit()
-            except Exception:
-                logger.exception("Postgres checkpoint write failed for thread %s", thread_id)
-        return step
+                conn.commit()
+                return step
+            except Exception as exc:  # noqa: BLE001 -- fallback to in-memory checkpointer on write error
+                logger.warning("Postgres checkpoint write failed for thread %s (%s); writing to memory fallback", thread_id, exc)
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception as rb_exc:  # noqa: BLE001
+                        logger.debug("Rollback on failed checkpoint write failed: %s", rb_exc)
+            finally:
+                if conn is not None and self._pool is not None:
+                    self._pool.putconn(conn)
+
+        # Fallback to in-memory checkpointer when Postgres is not available or write failed
+        return self._memory_backup.save(thread_id, state, next_node)
 
     def get_latest(self, thread_id: str) -> CheckpointRecord | None:
-        mem_latest = self._memory_backup.get_latest(thread_id)
-        if mem_latest is not None:
-            return mem_latest
-        if self._psycopg and self.dsn:
+        if self._pool is not None and self._psycopg is not None:
+            conn = None
             try:
-                with self._psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                conn = self._pool.getconn()
+                with conn.cursor() as cur:
                     cur.execute(
                         "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id DESC LIMIT 1",
                         (thread_id,)
@@ -190,21 +232,21 @@ class PostgresSaver:
                         step_index, state_json, next_node = row
                         raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
                         restored = deserialize_state_payload(raw_dict)
-                        state_obj = DiagnosticState(restored)
-                        record = CheckpointRecord(step_index, state_obj, next_node)
-                        self._memory_backup.threads.setdefault(thread_id, []).append(record)
-                        return record
-            except Exception:
-                logger.exception("Failed to query checkpoint from PostgreSQL for thread %s", thread_id)
-        return None
+                        return CheckpointRecord(step_index, DiagnosticState(restored), next_node)
+            except Exception as exc:  # noqa: BLE001 -- fallback to in-memory checkpointer on query failure
+                logger.warning("Postgres get_latest query failed for thread %s (%s); falling back to memory", thread_id, exc)
+            finally:
+                if conn is not None and self._pool is not None:
+                    self._pool.putconn(conn)
+
+        return self._memory_backup.get_latest(thread_id)
 
     def get_history(self, thread_id: str) -> list[CheckpointRecord]:
-        mem_hist = self._memory_backup.get_history(thread_id)
-        if mem_hist:
-            return mem_hist
-        if self._psycopg and self.dsn:
+        if self._pool is not None and self._psycopg is not None:
+            conn = None
             try:
-                with self._psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                conn = self._pool.getconn()
+                with conn.cursor() as cur:
                     cur.execute(
                         "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id ASC",
                         (thread_id,)
@@ -215,12 +257,23 @@ class PostgresSaver:
                         raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
                         restored = deserialize_state_payload(raw_dict)
                         records.append(CheckpointRecord(step_index, DiagnosticState(restored), next_node))
-                    if records:
-                        self._memory_backup.threads[thread_id] = list(records)
-                        return records
-            except Exception:
-                logger.exception("Failed to query checkpoint history from PostgreSQL for thread %s", thread_id)
-        return []
+                    return records
+            except Exception as exc:  # noqa: BLE001 -- fallback to in-memory checkpointer on query failure
+                logger.warning("Postgres get_history query failed for thread %s (%s); falling back to memory", thread_id, exc)
+            finally:
+                if conn is not None and self._pool is not None:
+                    self._pool.putconn(conn)
+
+        return self._memory_backup.get_history(thread_id)
+
+    def close(self):
+        """Close connection pool on shutdown."""
+        if self._pool is not None:
+            try:
+                self._pool.closeall()
+            except Exception as close_exc:  # noqa: BLE001
+                logger.debug("Pool close error: %s", close_exc)
+            self._pool = None
 
 class StateGraph:
     """StateGraph engine implementing directed state transitions, conditional edges, and HITL gates."""
@@ -275,7 +328,7 @@ class CompiledStateGraph:
             last_record = self.checkpointer.get_latest(thread_id)
             if not last_record:
                 raise ValueError(f"No checkpoint found for thread '{thread_id}' to resume.")
-            state = copy.deepcopy(last_record.state)
+            state = _clone_state_snapshot(last_record.state)
             # Inject human approval or resume value
             if isinstance(resume_command.resume, dict):
                 approved = resume_command.resume.get("approved", False)
@@ -336,12 +389,16 @@ class CompiledStateGraph:
                 self.checkpointer.save(thread_id, state, next_node=current_node)
                 return state
 
-            # 4. Apply state updates using field reducers (with dynamic Send fan-out support)
+            # 4. Apply state updates using field reducers (with concurrent Send fan-out support)
             if isinstance(update, list) and len(update) > 0 and isinstance(update[0], Send):
-                for send_action in update:
-                    sub_func = self.graph.nodes.get(send_action.node)
-                    if sub_func:
-                        sub_res = sub_func(send_action.arg)
+                with ThreadPoolExecutor(max_workers=min(len(update), 8)) as executor:
+                    futures = []
+                    for send_action in update:
+                        sub_func = self.graph.nodes.get(send_action.node)
+                        if sub_func:
+                            futures.append(executor.submit(sub_func, send_action.arg))
+                    for fut in futures:
+                        sub_res = fut.result()
                         if isinstance(sub_res, dict):
                             state.apply_update(sub_res)
             elif isinstance(update, dict):
@@ -372,30 +429,38 @@ class CompiledStateGraph:
 # 6-Step Node Implementations matching End-to-End Execution Plan
 # -------------------------------------------------------------
 
+_SHARED_DRAIN_PARSER = DrainLogParser()
+_WORKER_ERROR_CODES = ("ORA-00054", "ORA-14098", "ORA-02478", "ORA-00001", "ORA-12571")
+_EBS_CATALOG_ERROR_CODES = (
+    "ORA-00054", "ORA-14098", "ORA-02478", "ORA-00001", "ORA-12571",
+    "ORA-00060", "ORA-01555", "ORA-01653", "ORA-04031"
+)
+
 def parse_worker_log_node(sub_state: dict[str, Any]) -> dict:
     """Parallel worker node for parsing concurrent worker logs (.req/.log) or staging tables via Send primitive."""
     worker_id = sub_state.get("worker_id", "WORKER_1")
     target_table = sub_state.get("table", "MSC_ST_DEMANDS")
     log_content = sub_state.get("log_content", "")
-    
-    parser = DrainLogParser()
+
+    parser = _SHARED_DRAIN_PARSER
     extracted_templates = []
-    detected_errors = []
-    
+    detected_errors: set[str] = set()
+
     for line in log_content.splitlines():
         if not line.strip():
             continue
         parsed = parser.parse_line(line)
         if parsed.get("template"):
             extracted_templates.append(parsed["template"])
-        for code in ["ORA-00054", "ORA-14098", "ORA-02478", "ORA-00001", "ORA-12571"]:
-            if code in line and code not in detected_errors:
-                detected_errors.append(code)
+        for code in _WORKER_ERROR_CODES:
+            if code in line:
+                detected_errors.add(code)
 
+    errors_list = list(detected_errors)
     return {
         "log_templates": extracted_templates,
         "log_buffers": [f"[{worker_id}] Tokenized {len(extracted_templates)} templates on {target_table}."],
-        "intermediate_query_results": [{"worker_id": worker_id, "table": target_table, "errors": detected_errors}],
+        "intermediate_query_results": [{"worker_id": worker_id, "table": target_table, "errors": errors_list}],
         "audit_trail": [{"event": "PARALLEL_WORKER_PARSED", "worker_id": worker_id, "table": target_table}]
     }
 
@@ -419,9 +484,9 @@ def log_ingestion_node(state: AgentState):
             "[12-OCT-2025 04:12:10]: Worker process 31902 terminated with fatal error status."
         ]
 
-    parser = DrainLogParser()
+    parser = _SHARED_DRAIN_PARSER
     extracted_templates = []
-    detected_errors = []
+    detected_errors: set[str] = set()
     target_table = "MSC_ST_DEMANDS"
 
     for line in raw_logs:
@@ -429,17 +494,18 @@ def log_ingestion_node(state: AgentState):
         if parsed.get("template"):
             extracted_templates.append(parsed["template"])
         # Anomaly and stack filtering across entire EBS catalog
-        for code in ["ORA-00054", "ORA-14098", "ORA-02478", "ORA-00001", "ORA-12571", "ORA-00060", "ORA-01555", "ORA-01653", "ORA-04031"]:
-            if code in line and code not in detected_errors:
-                detected_errors.append(code)
-        if ("ST_STATUS" in line and ("not zero" in line or "= 2" in line or "current ST_STATUS = 2" in line or "stalled" in line or "crashed" in line)) and "STUCK_ST_STATUS" not in detected_errors:
-            detected_errors.append("STUCK_ST_STATUS")
+        for code in _EBS_CATALOG_ERROR_CODES:
+            if code in line:
+                detected_errors.add(code)
+        if ("ST_STATUS" in line and ("not zero" in line or "= 2" in line or "current ST_STATUS = 2" in line or "stalled" in line or "crashed" in line)):
+            detected_errors.add("STUCK_ST_STATUS")
         objs = parsed.get("parameters", {}).get("TARGET_OBJECTS", [])
         if objs:
             target_table = objs[0]
 
+    errors_list = list(detected_errors)
     ctx_update = {
-        "detected_errors": detected_errors,
+        "detected_errors": errors_list,
         "target_staging_table": target_table
     }
 
@@ -447,7 +513,7 @@ def log_ingestion_node(state: AgentState):
         "log_templates": extracted_templates,
         "context": ctx_update,
         "messages": [AIMessage(
-            content=f"Log Ingestion complete: Tokenized {len(extracted_templates)} templates via Drain. Detected error signatures: {', '.join(detected_errors) if detected_errors else 'None'}."
+            content=f"Log Ingestion complete: Tokenized {len(extracted_templates)} templates via Drain. Detected error signatures: {', '.join(errors_list) if errors_list else 'None'}."
         )]
     }
 
@@ -681,18 +747,25 @@ def rca_hypothesis_node(state: AgentState) -> dict:
         "messages": [AIMessage(content=f"RCA Synthesis: {thesis} | Diagnostic Confidence: {confidence:.1f}% | Risk Tier: {risk}.")]
     }
 
+def _execute_kill_session_action(eng: RemediationEngine, st: AgentState, dry: bool) -> Any:
+    """Precomputes root blocker lock telemetry to avoid repeated generator scans."""
+    telemetry = st.get("lock_telemetry", [])
+    root = next((x for x in telemetry if x.get("lock_depth") == 1), {})
+    ctx = st.get("context", {})
+    return eng.execute_kill_session(
+        sid=root.get("sid") or ctx.get("target_sid", 412),
+        serial=root.get("serial_number") or ctx.get("target_serial", 28419),
+        object_name=root.get("object_name", ctx.get("target_staging_table", "MSC_ST_DEMANDS")),
+        inst_id=root.get("inst_id"),
+        username=root.get("oracle_username", "APPS"),
+        module=root.get("module", "MSCPDCW"),
+        session_type=root.get("session_type", "USER"),
+        instance_id=ctx.get("instance_id", 1001),
+        dry_run=dry,
+    )
+
 ACTION_EXECUTORS: dict[str, Callable[[RemediationEngine, AgentState, bool], Any]] = {
-    "KILL_SESSION": lambda eng, st, dry: eng.execute_kill_session(
-        sid=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("sid") or st.get("context", {}).get("target_sid", 412),
-        serial=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("serial_number") or st.get("context", {}).get("target_serial", 28419),
-        object_name=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("object_name", st.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")),
-        inst_id=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("inst_id"),
-        username=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("oracle_username", "APPS"),
-        module=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("module", "MSCPDCW"),
-        session_type=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("session_type", "USER"),
-        instance_id=st.get("context", {}).get("instance_id", 1001),
-        dry_run=dry
-    ),
+    "KILL_SESSION": _execute_kill_session_action,
     "PURGE_STAGING_NO_VALIDATION": lambda eng, st, dry: eng.execute_purge_staging_no_validation(
         instance_id=st.get("context", {}).get("instance_id", 1001),
         dry_run=dry
