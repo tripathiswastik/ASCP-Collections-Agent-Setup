@@ -6,6 +6,7 @@ against dynamic V$ views, and asserts the root blocker is accurately isolated.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 import unittest
@@ -42,7 +43,7 @@ def get_live_oracle_config() -> OracleConfig | None:
 def is_oracle_live_available() -> bool:
     """Probes if a live Oracle database is reachable."""
     try:
-        import oracledb  # type: ignore
+        oracledb = importlib.import_module("oracledb")
     except ImportError:
         return False
 
@@ -61,7 +62,7 @@ def is_oracle_live_available() -> bool:
         )
         conn.close()
         return True
-    except (oracledb.DatabaseError, OSError, TimeoutError):
+    except (getattr(oracledb, "DatabaseError", Exception), OSError, TimeoutError):
         return False
 
 
@@ -74,8 +75,7 @@ class TestOracleLiveIntegration(unittest.TestCase):
             raise unittest.SkipTest("Live Oracle database not accessible (skip for non-container CI runs)")
 
         cls.config = get_live_oracle_config()
-        import oracledb  # type: ignore
-        cls.oracledb = oracledb
+        cls.oracledb = importlib.import_module("oracledb")
 
         # Setup dedicated test table
         with cls.oracledb.connect(
