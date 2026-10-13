@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
+
 # tests/test_security_fixes.py
 import os
 import unittest
 from unittest import mock
 
-try:
-    import pytest
-except ImportError:
+if importlib.util.find_spec("pytest") is not None:
+    pytest = importlib.import_module("pytest")
+else:
     class _PytestShim:
         class raises:
             def __init__(self, expected_exc):
