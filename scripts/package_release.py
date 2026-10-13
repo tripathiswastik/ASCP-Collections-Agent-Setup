@@ -6,10 +6,12 @@ Purpose: Packaging script creating a clean, production-grade release ZIP archive
 Runs-in: Release pipeline or standalone deployment script.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
-import zipfile
 import sys
+import zipfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +55,7 @@ def clean_local_bytecode(root: Path):
         try:
             pyc.unlink(missing_ok=True)
             removed_count += 1
-        except Exception:
+        except OSError:
             pass
     print(f"[+] Purged {removed_count} local pycache / bytecode entries.")
 
@@ -68,9 +70,7 @@ def should_exclude(rel_path: Path) -> bool:
             return True
     if rel_path.suffix in EXCLUDE_EXTENSIONS:
         return True
-    if rel_path.name in EXCLUDE_FILENAMES:
-        return True
-    return False
+    return rel_path.name in EXCLUDE_FILENAMES
 
 
 def build_release_zip() -> Path:
@@ -121,7 +121,7 @@ def build_release_zip() -> Path:
             print(f"    - {entry}")
         sys.exit(1)
 
-    print(f"[+] VERIFIED: 0 .git entries, 0 .pyc files, 0 __pycache__ directories in release archive.")
+    print("[+] VERIFIED: 0 .git entries, 0 .pyc files, 0 __pycache__ directories in release archive.")
     print("================================================================================")
     print("      [SUCCESS] PRODUCTION RELEASE ZIP SUCCESSFULLY PACKAGED!")
     print("================================================================================")

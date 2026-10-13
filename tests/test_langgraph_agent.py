@@ -1,8 +1,12 @@
 """Unit tests for LangGraph State Machine, Checkpointing, and HITL Gates."""
 
+from __future__ import annotations
+
 import unittest
+
 from ascp_agent.graph import create_ascp_diagnostic_graph
-from ascp_agent.state import DiagnosticState, AIMessage, HumanMessage, Command
+from ascp_agent.state import AIMessage, Command, DiagnosticState, HumanMessage
+
 
 class TestLangGraphAgent(unittest.TestCase):
     def setUp(self):
@@ -131,7 +135,7 @@ class TestLangGraphAgent(unittest.TestCase):
         try:
             try:
                 raise InterruptSignal({"action": "KILL_SESSION"})
-            except Exception:
+            except Exception:  # noqa: BLE001 -- test intentionally verifies InterruptSignal bypasses broad Exception
                 swallowed = True
         except InterruptSignal:
             swallowed = False

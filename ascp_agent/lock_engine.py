@@ -4,16 +4,17 @@ Executes hierarchical lock queries to isolate root blocker sessions holding Mode
 on ASCP staging tables (MSC_ST_*).
 """
 
+from __future__ import annotations
+
 import logging
 import time
-from dataclasses import dataclass, asdict
-from typing import List, Dict, Any, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class LockQueryError(Exception):
     """Raised when live Oracle lock query fails."""
-    pass
 
 LOCK_MODE_MAPPING = {
     0: ("NONE", "Lock requested but not yet obtained. Worker queued waiting on target table."),
@@ -52,7 +53,7 @@ START WITH s.blocking_session IS NULL
        AND s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
 ORDER BY LEVEL ASC;"""
 
-SQL_QUERY_REGISTRY: Dict[str, str] = {
+SQL_QUERY_REGISTRY: dict[str, str] = {
     "HIERARCHICAL_LOCK_TREE": HIERARCHICAL_LOCK_SQL,
     "ORA_00054_LOCK_LOOKUP": (
         "SELECT lo.session_id AS sid, s.serial#, lo.locked_mode, do.object_name "
@@ -101,7 +102,7 @@ def get_sql_query(query_id: str, **kwargs) -> str:
         return raw.format(**kwargs)
     return raw
 
-from ascp_agent.db import get_oracle_pool, OracleConnectionPool
+from ascp_agent.db import OracleConnectionPool, get_oracle_pool
 
 
 @dataclass
@@ -115,26 +116,26 @@ class LockTelemetryItem:
     os_process_id: str
     module: str
     action: str
-    blocking_session: Optional[int]
-    object_id: Optional[int]
+    blocking_session: int | None
+    object_id: int | None
     object_name: str
     locked_mode: int
     locked_mode_text: str
     operational_impact: str
     current_sql_text: str
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 class LockDiagnosticsEngine:
     """Interrogates Oracle dynamic performance views to uncover root blocker sessions."""
 
-    def __init__(self, connection_config: Optional[Any] = None, simulated_scenario: Optional[str] = "ora_00054_mode6"):
+    def __init__(self, connection_config: Any | None = None, simulated_scenario: str | None = "ora_00054_mode6"):
         self.config = connection_config
         self.simulated_scenario = simulated_scenario
         cfg = connection_config if hasattr(connection_config, "host") else None
         self.pool: OracleConnectionPool = get_oracle_pool(cfg)
-        self._cached_telemetry: Optional[List[Dict[str, Any]]] = None
+        self._cached_telemetry: list[dict[str, Any]] | None = None
         self._cache_timestamp: float = 0.0
         self.cache_ttl: float = 5.0
 
@@ -145,7 +146,7 @@ class LockDiagnosticsEngine:
             return self.pool._async_pool
         return None
 
-    def _row_to_item(self, row_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _row_to_item(self, row_dict: dict[str, Any]) -> dict[str, Any]:
         """Convert a single database row dict into a LockTelemetryItem dict."""
         locked_mode = row_dict.get("locked_mode", 0) or 0
         mode_text, impact = LOCK_MODE_MAPPING.get(locked_mode, ("UNKNOWN", "Undefined mode."))
@@ -169,13 +170,13 @@ class LockDiagnosticsEngine:
         )
         return item.to_dict()
 
-    def _map_query_rows(self, dict_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _map_query_rows(self, dict_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Maps raw row dictionaries to structured LockTelemetryItem dictionaries."""
         return [self._row_to_item(r) for r in dict_rows]
 
-    def _query_live_oracle(self) -> List[Dict[str, Any]]:
+    def _query_live_oracle(self) -> list[dict[str, Any]]:
         """Run the hierarchical lock query against live Oracle. Raises on failure."""
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         oracledb_mod = getattr(self.pool, "_oracledb", None)
         if oracledb_mod is None:
             import oracledb
@@ -187,15 +188,14 @@ class LockDiagnosticsEngine:
             host=cfg.host,
             port=cfg.port,
             service_name=cfg.service_name,
-        ) as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(HIERARCHICAL_LOCK_SQL)
-                cols = [c[0].lower() for c in cursor.description]
-                for row in cursor.fetchall():
-                    results.append(self._row_to_item(dict(zip(cols, row))))
+        ) as conn, conn.cursor() as cursor:
+            cursor.execute(HIERARCHICAL_LOCK_SQL)
+            cols = [c[0].lower() for c in cursor.description]
+            for row in cursor.fetchall():
+                results.append(self._row_to_item(dict(zip(cols, row))))
         return results
 
-    async def execute_hierarchical_lock_query_async(self) -> List[Dict[str, Any]]:
+    async def execute_hierarchical_lock_query_async(self) -> list[dict[str, Any]]:
         """Executes non-blocking async hierarchical query via live query or simulation."""
         if not self.pool.is_simulation:
             try:
@@ -205,7 +205,7 @@ class LockDiagnosticsEngine:
                 raise LockQueryError("Live Oracle lock query failed") from exc
         return self._generate_simulated_lock_telemetry()
 
-    def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> List[Dict[str, Any]]:
+    def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> list[dict[str, Any]]:
         """Executes hierarchical query or returns TTL-cached telemetry to prevent database hammering."""
         now = time.time()
         if not bypass_cache and self._cached_telemetry is not None and (now - self._cache_timestamp) < self.cache_ttl:
@@ -226,7 +226,7 @@ class LockDiagnosticsEngine:
         self._cache_timestamp = now
         return res
 
-    def _generate_simulated_lock_telemetry(self) -> List[Dict[str, Any]]:
+    def _generate_simulated_lock_telemetry(self) -> list[dict[str, Any]]:
         """Simulate hierarchical lock scenarios for ASCP collections."""
         if self.simulated_scenario == "ora_00054_mode6":
             # Scenario: Uncommitted DML / manual LOCK TABLE holding Mode 6 on MSC_ST_DEMANDS
@@ -342,14 +342,14 @@ class LockDiagnosticsEngine:
 
         return []
 
-    def isolate_root_blocker(self, telemetry: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def isolate_root_blocker(self, telemetry: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Identify root blocker session from hierarchical telemetry."""
         for item in telemetry:
             if item.get("lock_depth") == 1 and item.get("blocking_session") is None:
                 return item
         return None
 
-    def inspect_session_undo_volume(self, sid: int) -> Dict[str, Any]:
+    def inspect_session_undo_volume(self, sid: int) -> dict[str, Any]:
         """Inspects V$TRANSACTION (USED_UREC) for active uncommitted rollback volume.
         Prevents PMON rollback hang where held locks persist while un-abortable rollback executes.
         """
@@ -382,7 +382,7 @@ class LockDiagnosticsEngine:
             "recommendation": "DEFER_KILL_ALERT_DBA" if high_risk else "PROCEED_WITH_TERMINATION"
         }
 
-    def verify_session_active(self, sid: int, serial: int, inst_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def verify_session_active(self, sid: int, serial: int, inst_id: int | None = None) -> dict[str, Any] | None:
         """Re-queries the database immediately prior to termination to confirm the session
         is still active and that the SID has not been recycled for a new connection.
         """

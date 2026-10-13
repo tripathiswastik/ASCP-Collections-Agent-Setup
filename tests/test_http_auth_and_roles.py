@@ -10,15 +10,18 @@ Tests real HTTP request/response exchanges against a live ThreadedASCPDiagnostic
 8. Append-Only Audit Log endpoint verification
 """
 
-import unittest
-import urllib.request
-import urllib.error
+from __future__ import annotations
+
 import json
-import threading
 import socket
+import threading
 import time
+import unittest
+import urllib.error
+import urllib.request
+
 import web.server as server_mod
-from web.server import ThreadedASCPDiagnosticServer, ASCPDiagnosticHandler
+from web.server import ASCPDiagnosticHandler, ThreadedASCPDiagnosticServer
 
 
 def find_free_port() -> int:
@@ -52,7 +55,7 @@ class TestHttpAuthAndRoles(unittest.TestCase):
         cls.httpd.shutdown()
         cls.httpd.server_close()
 
-    def _http_req(self, path: str, method: str = "GET", headers: dict = None, body: dict = None):
+    def _http_req(self, path: str, method: str = "GET", headers: dict | None = None, body: dict | None = None):
         url = f"{self.base_url}{path}"
         req_headers = headers.copy() if headers else {}
         data = None
@@ -67,7 +70,7 @@ class TestHttpAuthAndRoles(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             try:
                 body_parsed = json.loads(exc.read().decode("utf-8"))
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
                 body_parsed = {"raw": exc.reason}
             return exc.code, body_parsed
 
@@ -77,17 +80,17 @@ class TestHttpAuthAndRoles(unittest.TestCase):
         self.assertIn("error", data)
 
     def test_wrong_token_returns_401(self):
-        status, data = self._http_req("/api/status", headers={"X-API-Token": "invalid-secret-xyz"})
+        status, _ = self._http_req("/api/status", headers={"X-API-Token": "invalid-secret-xyz"})
         self.assertEqual(status, 401)
 
     def test_forged_referer_returns_401(self):
-        status, data = self._http_req("/api/status", headers={
+        status, _ = self._http_req("/api/status", headers={
             "Referer": "http://127.0.0.1:8085/index.html"
         })
         self.assertEqual(status, 401)
 
     def test_query_string_token_rejected_as_401(self):
-        status, data = self._http_req("/api/status?token=approver-secret-456")
+        status, _ = self._http_req("/api/status?token=approver-secret-456")
         self.assertEqual(status, 401)
 
     def test_viewer_role_can_read_telemetry(self):

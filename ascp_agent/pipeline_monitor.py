@@ -4,8 +4,10 @@ Operational Data Store (ODS plan_id = -1), and Planning Data Store (PDS).
 Monitors MSC_APPS_INSTANCES.ST_STATUS registry flags and validation error codes.
 """
 
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Optional
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any
 
 ST_STATUS_MAP = {
     0: ("IDLE / STAGING_PREPARED", "Pipeline idle or staging structures cleansed and ready for pull."),
@@ -24,8 +26,8 @@ class InstanceRegistryState:
     st_status_name: str
     description: str
     last_collection_date: str
-    active_parent_request_id: Optional[int]
-    active_program: Optional[str]
+    active_parent_request_id: int | None
+    active_program: str | None
 
 @dataclass
 class StageStatus:
@@ -41,7 +43,7 @@ class StageStatus:
 class PipelineMonitor:
     """Introspects ASCP pipeline execution stages and instance registries."""
 
-    def __init__(self, connection_config: Optional[Any] = None, simulated_scenario: str = "stage2_stalled"):
+    def __init__(self, connection_config: Any | None = None, simulated_scenario: str = "stage2_stalled"):
         self.config = connection_config
         self.simulated_scenario = simulated_scenario
 
@@ -81,7 +83,7 @@ class PipelineMonitor:
             active_program=prog
         )
 
-    def get_pipeline_stages_telemetry(self) -> List[Dict[str, Any]]:
+    def get_pipeline_stages_telemetry(self) -> list[dict[str, Any]]:
         """Return diagnostic metrics across all 3 collection ETL stages."""
         if self.simulated_scenario == "stage1_stalled":
             return [
@@ -102,7 +104,7 @@ class PipelineMonitor:
                 asdict(StageStatus(3, "Staging Maintenance & Purge", "MSCPDCP", "TRUNCATE SUB", "MSC_ST_*", "COMPLETED", 0, 0))
             ]
 
-    def get_staging_quarantine_records(self, table_name: str = "MSC_ST_DEMANDS") -> List[Dict[str, Any]]:
+    def get_staging_quarantine_records(self, table_name: str = "MSC_ST_DEMANDS") -> list[dict[str, Any]]:
         """Simulate or query quarantined staging rows with ERR_CODE and PROCESS_STATUS != 1."""
         return [
             {
@@ -127,7 +129,7 @@ class PipelineMonitor:
             }
         ]
 
-    def verify_and_reset_registry(self, instance_id: int = 1001) -> Dict[str, Any]:
+    def verify_and_reset_registry(self, instance_id: int = 1001) -> dict[str, Any]:
         """Verifies MSC_APPS_INSTANCES.ST_STATUS prior to relaunching collections.
         If a crashed run left ST_STATUS > 0 or -1, automates a recovery call to
         Planning Data Collection - Purge Staging Tables with Validation = No

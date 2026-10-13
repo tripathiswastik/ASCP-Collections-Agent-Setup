@@ -3,16 +3,19 @@ Unit tests for enterprise safety, SQL injection protection, fail-closed configur
 and human-in-the-loop governance guardrails.
 """
 
+from __future__ import annotations
+
 import unittest
+
 from ascp_agent.config import OracleConfig, ServiceNowConfig
+from ascp_agent.drain_parser import DrainLogParser
 from ascp_agent.remediation import (
     RemediationEngine,
+    format_align_indexes_sql,
+    format_kill_session_sql,
     validate_oracle_identifier,
     validate_session_numeric,
-    format_kill_session_sql,
-    format_align_indexes_sql
 )
-from ascp_agent.drain_parser import DrainLogParser
 
 
 class TestSafetyAndGovernance(unittest.TestCase):

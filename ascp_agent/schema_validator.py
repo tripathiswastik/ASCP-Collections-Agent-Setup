@@ -3,27 +3,30 @@ Implements DiagnosticReport validation, schema constraint checking,
 retry counting (max 3 retries), and self-healing error feedback.
 """
 
+from __future__ import annotations
+
 import json
-from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
+
 from ascp_agent.prompt_framework import StratifiedPromptBuilder
+
 
 class SchemaValidationError(Exception):
     """Raised when output fails required schema contract."""
-    pass
 
 @dataclass
 class DiagnosticSummary:
     failing_stage: str
     failing_program_short_name: str
-    request_id: Optional[int]
+    request_id: int | None
     primary_error_code: str
     confidence_score: float
 
 @dataclass
 class RootCauseAnalysis:
     summary: str
-    affected_objects: List[str]
+    affected_objects: list[str]
     is_infrastructure_issue: bool
     is_data_validation_issue: bool
 
@@ -35,9 +38,9 @@ class ProfileOptionAdjustment:
 @dataclass
 class RemediationPlan:
     immediate_action_required: str
-    sql_scripts_to_execute: List[str]
-    os_commands_to_execute: List[str]
-    profile_option_adjustments: List[ProfileOptionAdjustment]
+    sql_scripts_to_execute: list[str]
+    os_commands_to_execute: list[str]
+    profile_option_adjustments: list[ProfileOptionAdjustment]
     requires_manager_bounce: bool
 
 @dataclass
@@ -47,7 +50,7 @@ class DiagnosticReport:
     remediation_plan: RemediationPlan
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'DiagnosticReport':
+    def from_dict(cls, data: dict[str, Any]) -> DiagnosticReport:
         """Validates and instantiates DiagnosticReport from dictionary."""
         # 1. Validate diagnostic_summary
         summary_raw = data.get("diagnostic_summary")
@@ -111,13 +114,13 @@ class DiagnosticReport:
         )
 
     @classmethod
-    def model_validate_json(cls, json_str: str) -> 'DiagnosticReport':
+    def model_validate_json(cls, json_str: str) -> DiagnosticReport:
         """Parses and validates JSON string into DiagnosticReport."""
         clean_str = StratifiedPromptBuilder.clean_json_output(json_str)
         data = json.loads(clean_str)
         return cls.from_dict(data)
 
-    def model_dump(self) -> Dict[str, Any]:
+    def model_dump(self) -> dict[str, Any]:
         """Serializes report into dictionary."""
         return asdict(self)
 
@@ -135,7 +138,7 @@ class DiagnosticReport:
 # LangGraph Self-Healing Validation Node & Router
 # -------------------------------------------------------------
 
-def validate_schema_node(state: Dict[str, Any]) -> Dict[str, Any]:
+def validate_schema_node(state: dict[str, Any]) -> dict[str, Any]:
     """Validates raw LLM output against the required machine-parseable JSON schema."""
     raw_output = state.get("raw_llm_output", "")
     retry_count = state.get("retry_count", 0)
@@ -148,14 +151,14 @@ def validate_schema_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "confidence_score": validated.diagnostic_summary.confidence_score * 100.0,
             "requires_human_approval": validated.requires_human_approval
         }
-    except Exception as err:
+    except (ValueError, TypeError, json.JSONDecodeError, SchemaValidationError) as err:
         return {
             "is_validated": False,
             "retry_count": retry_count + 1,
             "validation_error": str(err)
         }
 
-def check_validation_routing(state: Dict[str, Any]) -> str:
+def check_validation_routing(state: dict[str, Any]) -> str:
     """Evaluates validation outcome and routes to remediation, HITL, or self-correction."""
     if state.get("is_validated"):
         if state.get("requires_human_approval"):

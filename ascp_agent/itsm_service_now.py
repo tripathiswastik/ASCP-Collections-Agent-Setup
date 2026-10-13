@@ -3,11 +3,14 @@ Formats and dispatches structured diagnostic incident payloads to ServiceNow
 Table REST API (POST /api/now/table/incident) for auditable DBA workflows.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 import uuid
-from typing import Dict, Any, Optional
 from collections import deque
+from typing import Any
+
 from ascp_agent.config import ServiceNowConfig
 
 logger = logging.getLogger(__name__)
@@ -15,7 +18,7 @@ logger = logging.getLogger(__name__)
 class ServiceNowClient:
     """Client for dispatching ASCP diagnostic incidents to ServiceNow Table API."""
 
-    def __init__(self, config: Optional[ServiceNowConfig] = None):
+    def __init__(self, config: ServiceNowConfig | None = None):
         self.config = config or ServiceNowConfig()
         self.created_incidents = deque(maxlen=200)
         self._session = None
@@ -36,14 +39,14 @@ class ServiceNowClient:
         pipeline_stage: str,
         instance_id: int,
         affected_staging_objects: list,
-        root_blocker_session: Optional[Dict[str, Any]],
+        root_blocker_session: dict[str, Any] | None,
         drain_log_templates: list,
         recommended_remediation: str,
         agent_reasoning_trace: str,
-        lock_hierarchy: Optional[list] = None,
+        lock_hierarchy: list | None = None,
         impact: str = "2",
         urgency: str = "2"
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Constructs compliant ServiceNow Incident JSON payload enriched with DBA telemetry."""
         root = root_blocker_session or {}
         root_sid = root.get("sid")
@@ -87,7 +90,7 @@ class ServiceNowClient:
             }
         }
 
-    def build_incident_payload_from_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    def build_incident_payload_from_state(self, state: dict[str, Any]) -> dict[str, Any]:
         """Convenience method that serializes a DiagnosticState dictionary into a compliant ServiceNow Incident payload."""
         from ascp_agent.remediation import format_recovery_command_block
         target_table = state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")
@@ -119,7 +122,7 @@ class ServiceNowClient:
             payload["u_diagnostic_payload"]["correlation_id"] = payload["correlation_id"]
         return payload
 
-    def _simulated_result(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _simulated_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Generate auditable simulated ServiceNow ticket for dry-run and local testing with deduplication."""
         corr_id = payload.get("correlation_id")
         if not hasattr(self, "_active_by_correlation_id"):
@@ -157,7 +160,7 @@ class ServiceNowClient:
         self.created_incidents.append(result)
         return result
 
-    def dispatch_incident(self, payload: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
+    def dispatch_incident(self, payload: dict[str, Any], max_retries: int = 3) -> dict[str, Any]:
         """POST or PATCH an incident to ServiceNow with correlation_id deduplication.
         Returns status CREATED, UPDATED_EXISTING, SIMULATED_DISPATCH, SKIPPED or FAILED.
         """
@@ -201,7 +204,7 @@ class ServiceNowClient:
                             }
                             self.created_incidents.append(res)
                             return res
-            except Exception as q_err:
+            except (requests.RequestException, ValueError, KeyError) as q_err:
                 logger.warning("ServiceNow correlation query failed, falling back to insert: %s", q_err)
 
         last_error = "no attempt made"

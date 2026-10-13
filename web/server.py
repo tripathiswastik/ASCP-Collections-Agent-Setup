@@ -4,19 +4,23 @@ Purpose: Multi-threaded HTTP server and REST API backend hosting the ASCP Diagno
 Runs-in: Standalone daemon process, Docker container, or background service (default port 8085).
 """
 
+from __future__ import annotations
+
+import hmac
 import http.server
-import socketserver
 import json
+import logging
+import mimetypes
 import os
+import socketserver
 import sys
 import threading
-import mimetypes
-import urllib.parse
-import hmac
-import uuid
 import time
-import logging
-from typing import Dict, Any, Optional, List
+import urllib.parse
+import uuid
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Add parent directory to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -24,20 +28,20 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from ascp_agent.drain_parser import DrainLogParser
-from ascp_agent.lock_engine import LockDiagnosticsEngine, LOCK_MODE_MAPPING
-from ascp_agent.pipeline_monitor import PipelineMonitor
 from ascp_agent.graph import create_ascp_diagnostic_graph
-from ascp_agent.state import Command
-from ascp_agent.simulator import SCENARIOS
+from ascp_agent.lock_engine import LOCK_MODE_MAPPING, LockDiagnosticsEngine
 from ascp_agent.metrics import GLOBAL_METRICS
+from ascp_agent.pipeline_monitor import PipelineMonitor
 from ascp_agent.secrets import GLOBAL_SECRET_MANAGER
+from ascp_agent.simulator import SCENARIOS
+from ascp_agent.state import Command
 
 # Canonical single source of truth for dashboard static assets
 PUBLIC_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = PUBLIC_DIR
 
 # Initial JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
-OPERATOR_TOKENS: Dict[str, str] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
+OPERATOR_TOKENS: dict[str, str] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
 
 # Concurrency & request safety limits
 MAX_BODY_BYTES = 64 * 1024
@@ -51,7 +55,7 @@ current_scenario_key = "ora_00054_mode6"
 _USED_APPROVAL_IDS: set = set()
 
 # Multi-session registry supporting concurrent / simultaneous diagnostic sessions
-_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_SESSIONS: dict[str, dict[str, Any]] = {}
 _ACTIVE_SESSION_ID: str = "default"
 thread_counter = 1
 
@@ -67,7 +71,7 @@ _SESSIONS[_ACTIVE_SESSION_ID] = {
 }
 
 
-def resolve_static_path(url_path: str) -> Optional[str]:
+def resolve_static_path(url_path: str) -> str | None:
     """Return an absolute file path inside PUBLIC_DIR, or None if not allowed."""
     relative = urllib.parse.unquote(url_path).lstrip("/") or "index.html"
     public_root = os.path.realpath(PUBLIC_DIR)
@@ -96,9 +100,9 @@ class Operator(str):
         return obj
 
 _AUDIT_LOG_LOCK = threading.Lock()
-_AUDIT_EVENTS: List[Dict[str, Any]] = []
+_AUDIT_EVENTS: list[dict[str, Any]] = []
 
-def record_audit_event(event: Dict[str, Any]) -> Dict[str, Any]:
+def record_audit_event(event: dict[str, Any]) -> dict[str, Any]:
     """Append immutable audit entry to in-memory audit trail and disk log."""
     entry = {
         "audit_id": f"aud-{uuid.uuid4().hex[:12]}",
@@ -111,16 +115,16 @@ def record_audit_event(event: Dict[str, Any]) -> Dict[str, Any]:
             log_path = os.path.join(PUBLIC_DIR, "remediation_audit.jsonl")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
-        except Exception:
-            pass
-    return entry
+        except OSError as exc:
+            logger.warning("Failed to append remediation audit event: %s", exc)
+        return entry
 
 
 class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server):
         super().__init__(request, client_address, server)
 
-    def _authenticate(self) -> Optional[Operator]:
+    def _authenticate(self) -> Operator | None:
         """Return the operator identity for a valid X-API-Token header, else None."""
         supplied = self.headers.get("X-API-Token", "").strip()
         if not supplied:
@@ -141,7 +145,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 return Operator(user, role=role)
         return None
 
-    def _read_json_body(self) -> Optional[Dict[str, Any]]:
+    def _read_json_body(self) -> dict[str, Any] | None:
         """Return the parsed JSON object, or None if the body is invalid or too large."""
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -470,8 +474,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         )
                     diag_duration = max(0.0, time.time() - session_info.get("created_at", time.time()))
                     GLOBAL_METRICS.record_diagnosis(duration_seconds=diag_duration)
-            except Exception as exc:
-                logging.exception("Diagnostic Agent execution error: %s", exc)
+            except Exception:
+                logger.exception("Diagnostic Agent execution error")
                 self._send_json({"error": "Diagnostic Agent execution failed. Check server logs."}, 500)
                 return
 

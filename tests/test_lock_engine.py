@@ -1,7 +1,11 @@
 """Unit tests for the Oracle Lock Diagnostics Engine."""
 
+from __future__ import annotations
+
 import unittest
-from ascp_agent.lock_engine import LockDiagnosticsEngine, LOCK_MODE_MAPPING
+
+from ascp_agent.lock_engine import LOCK_MODE_MAPPING, LockDiagnosticsEngine
+
 
 class TestLockDiagnosticsEngine(unittest.TestCase):
     def setUp(self):

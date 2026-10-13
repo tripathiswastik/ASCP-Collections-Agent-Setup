@@ -7,10 +7,11 @@ Measures:
 4. Confidence Score Calibration (Brier Score, Calibration Bins, and ECE)
 """
 
-import sys
+from __future__ import annotations
+
 import os
-import math
-from typing import Dict, Any, List
+import sys
+from typing import Any
 
 # Add workspace root to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -20,8 +21,7 @@ if BASE_DIR not in sys.path:
 from ascp_agent.graph import create_ascp_diagnostic_graph
 from ascp_agent.simulator import SCENARIOS
 
-
-BENCHMARK_DATASET: List[Dict[str, Any]] = [
+BENCHMARK_DATASET: list[dict[str, Any]] = [
     {
         "id": "CASE-01",
         "description": "ORA-00054 DDL Lock Contention on MSC_DEMANDS during truncate",
@@ -147,7 +147,7 @@ BENCHMARK_DATASET: List[Dict[str, Any]] = [
 ]
 
 
-def run_evaluation_benchmark() -> Dict[str, Any]:
+def run_evaluation_benchmark() -> dict[str, Any]:
     print("=" * 80)
     print("ASCP DIAGNOSTIC AGENT QUANTITATIVE EVALUATION BENCHMARK")
     print("=" * 80)
@@ -158,8 +158,8 @@ def run_evaluation_benchmark() -> Dict[str, Any]:
     false_kills = 0
     non_destructive_cases = 0
 
-    confidence_scores: List[float] = []
-    correct_labels: List[int] = []  # 1 for correct, 0 for incorrect
+    confidence_scores: list[float] = []
+    correct_labels: list[int] = []  # 1 for correct, 0 for incorrect
 
     results = []
 

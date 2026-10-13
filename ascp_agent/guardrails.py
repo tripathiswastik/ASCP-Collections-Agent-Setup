@@ -6,28 +6,28 @@ Enforces defense-in-depth safety boundaries:
 4. Hard Token Spend Caps ($5.00 limit per diagnostic session)
 """
 
+from __future__ import annotations
+
 import re
 import time
-from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union
+from enum import Enum
+from typing import Any
+
 from ascp_agent.config import GuardrailsConfig
+
 
 class SecurityViolationError(Exception):
     """Raised when an action violates enterprise security guardrails."""
-    pass
 
 class BlastRadiusViolationError(SecurityViolationError):
     """Raised when an action violates session termination blast-radius limits."""
-    pass
 
 class ExecutionCapExceededError(Exception):
     """Raised when graph execution reaches the maximum super-step threshold."""
-    pass
 
 class TokenSpendCapExceededError(Exception):
     """Raised when cumulative token spend exceeds the dollar threshold."""
-    pass
 
 # Protected Oracle system schemas that must NEVER be terminated
 FORBIDDEN_USERS = {
@@ -57,10 +57,10 @@ ALLOWED_MODULE_PATTERNS = [
 def validate_session_kill_safety(
     target_sid: int,
     target_serial: int,
-    username: Optional[str] = None,
-    module: Optional[str] = None,
-    session_type: Optional[str] = "USER",
-    self_sid: Optional[int] = None
+    username: str | None = None,
+    module: str | None = None,
+    session_type: str | None = "USER",
+    self_sid: int | None = None
 ) -> None:
     """Enforces blast-radius safety checks:
     1. Never kill sessions owned by SYS or Oracle system schemas.
@@ -100,7 +100,7 @@ class KillRateLimiter:
     """Enforces cooldown (max 1 kill per instance per N minutes) and daily cap."""
     cooldown_seconds: int = 300  # 5 minutes
     daily_cap: int = 5           # Max 5 kills per 24 hours per instance
-    _history: Dict[str, List[float]] = field(default_factory=dict)
+    _history: dict[str, list[float]] = field(default_factory=dict)
 
     def reset(self) -> None:
         """Clear limiter history (useful for test isolation)."""
@@ -110,7 +110,7 @@ class KillRateLimiter:
         self,
         instance_id: Any,
         dry_run: bool = False,
-        now: Optional[float] = None,
+        now: float | None = None,
         force_override: bool = False
     ) -> None:
         import os
@@ -161,13 +161,13 @@ class RemediationActionEnum(str, Enum):
 @dataclass
 class TypedActionRequest:
     action: RemediationActionEnum
-    sid: Optional[int] = None
-    serial: Optional[int] = None
-    inst_id: Optional[int] = None
-    target_object: Optional[str] = None
-    instance_id: Optional[int] = None
+    sid: int | None = None
+    serial: int | None = None
+    inst_id: int | None = None
+    target_object: str | None = None
+    instance_id: int | None = None
 
-def validate_action_from_untrusted_data(action_name: str, params: Optional[Dict[str, Any]] = None) -> TypedActionRequest:
+def validate_action_from_untrusted_data(action_name: str, params: dict[str, Any] | None = None) -> TypedActionRequest:
     """Validates that action originates strictly from an enumerated set of safe actions
     and typed parameters, ensuring prompt injection cannot emit executable SQL or unauthorized commands.
     """
@@ -222,24 +222,24 @@ class EnterpriseGuardrails:
     """Enforces least-privilege, sanitization, step limits, and cost controls."""
 
     # Patterns indicating SQL injection or unauthorized destruction
-    FORBIDDEN_SQL_PATTERNS = [
+    FORBIDDEN_SQL_PATTERNS = (
         re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
         re.compile(r"\bDROP\s+DATABASE\b", re.IGNORECASE),
-        re.compile(r"\bTRUNCATE\s+TABLE\s+(?!MSC_ST_)", re.IGNORECASE), # Only MSC_ST_* truncations allowed via wrapper
+        re.compile(r"\bTRUNCATE\s+TABLE\s+(?!MSC_ST_)", re.IGNORECASE),  # Only MSC_ST_* truncations allowed via wrapper
         re.compile(r"\bGRANT\s+ALL\b", re.IGNORECASE),
         re.compile(r"\bALTER\s+USER\b", re.IGNORECASE),
-        re.compile(r"\bXP_CMDSHELL\b", re.IGNORECASE)
-    ]
+        re.compile(r"\bXP_CMDSHELL\b", re.IGNORECASE),
+    )
 
     # Prompt injection patterns
-    PROMPT_INJECTION_PATTERNS = [
+    PROMPT_INJECTION_PATTERNS = (
         re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
         re.compile(r"system\s+prompt\s+override", re.IGNORECASE),
         re.compile(r"bypass\s+security\s+checks", re.IGNORECASE),
-        re.compile(r"you\s+are\s+now\s+in\s+dan\s+mode", re.IGNORECASE)
-    ]
+        re.compile(r"you\s+are\s+now\s+in\s+dan\s+mode", re.IGNORECASE),
+    )
 
-    def __init__(self, config: Optional[GuardrailsConfig] = None):
+    def __init__(self, config: GuardrailsConfig | None = None):
         self.config = config or GuardrailsConfig()
         self.token_tracker = TokenTracker(spend_cap_usd=self.config.hard_token_spend_cap_usd)
         self.step_counter = 0
@@ -368,7 +368,7 @@ class EnterpriseGuardrails:
         sql_statement: str,
         execution_role: str = "APPS_WRAPPER_EXECUTE",
         is_hitl_approved: bool = False,
-        approval_id: Optional[str] = None
+        approval_id: str | None = None
     ) -> bool:
         """Enforces authorization boundary for high-risk remediation database mutations.
         Requires authenticated HITL sign-off with valid approval ID and separate execution credentials.

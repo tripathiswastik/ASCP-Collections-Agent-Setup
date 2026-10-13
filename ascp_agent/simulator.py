@@ -2,9 +2,11 @@
 Provides ready-to-test scenarios for all 5 failure modes and healthy baseline.
 """
 
-from typing import Dict, Any, List
+from __future__ import annotations
 
-SCENARIOS: Dict[str, Dict[str, Any]] = {
+from typing import Any
+
+SCENARIOS: dict[str, dict[str, Any]] = {
     "ora_00054_mode6": {
         "name": "Scenario 1: TM Mode 6 Exclusive Lock Contention (ORA-00054)",
         "description": "Uncommitted manual session (SID 412) holding Mode 6 lock on MSC_ST_DEMANDS. ODS Load workers blocked.",
@@ -161,7 +163,7 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
     }
 }
 
-def parse_scenario_logs(scenario_key: str) -> List[Dict[str, Any]]:
+def parse_scenario_logs(scenario_key: str) -> list[dict[str, Any]]:
     """Standardized scenario log parser routing directly through DrainLogParser."""
     from ascp_agent.drain_parser import DrainLogParser
     scenario = SCENARIOS.get(scenario_key)

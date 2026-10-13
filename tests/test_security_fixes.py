@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # tests/test_security_fixes.py
 import os
 import unittest
@@ -129,7 +131,8 @@ def test_server_has_no_default_tokens(monkeypatch=None):
     if monkeypatch:
         monkeypatch.delenv("ASCP_OPERATOR_TOKENS", raising=False)
         import importlib
-        import web.server as server
+
+        from web import server
         importlib.reload(server)
         assert server.OPERATOR_TOKENS == {}
     else:
@@ -137,7 +140,8 @@ def test_server_has_no_default_tokens(monkeypatch=None):
         try:
             os.environ.pop("ASCP_OPERATOR_TOKENS", None)
             import importlib
-            import web.server as server
+
+            from web import server
             importlib.reload(server)
             assert server.OPERATOR_TOKENS == {}
         finally:

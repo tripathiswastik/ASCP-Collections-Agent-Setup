@@ -5,10 +5,11 @@ and the weighted confidence calculation:
 C_diag = 0.4 * S_error_code + 0.4 * S_trace_match + 0.2 * S_state_consistency
 """
 
-import json
+from __future__ import annotations
+
 import re
-from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+
 
 @dataclass
 class ConfidenceComponents:

@@ -7,11 +7,14 @@ Executes targeted interventions with strict parameter checking and execution gua
 5. Partition Index Alignment (ALIGN_INDEXES)
 """
 
+from __future__ import annotations
+
 import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, Union, List, Tuple
+from typing import Any
+
 from ascp_agent.guardrails import EnterpriseGuardrails
 
 _IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_$#]{0,29}(\.[A-Z][A-Z0-9_$#]{0,29})?$")
@@ -37,7 +40,7 @@ def validate_oracle_identifier(name: str, field_name: str = "identifier") -> str
 def validate_session_numeric(val: Any, field_name: str = "sid") -> int:
     """Backwards-compatible wrapper for integer session ID validation with bounds checking."""
     if isinstance(val, bool):
-        raise ValueError(f"{field_name} must be a positive integer, got boolean")
+        raise ValueError(f"{field_name} must be a positive integer, got boolean")  # noqa: TRY004
     if isinstance(val, str):
         if not val.strip().isdigit():
             raise ValueError(f"{field_name} must contain only numeric digits: {val!r}")
@@ -62,10 +65,10 @@ class RemediationResult:
     message: str
     target_object: str
     execution_time_ms: float
-    audit_record: Dict[str, Any]
+    audit_record: dict[str, Any]
     dry_run: bool = False
 
-def format_kill_session_sql(sid: int, serial: int, inst_id: Optional[int] = None) -> str:
+def format_kill_session_sql(sid: int, serial: int, inst_id: int | None = None) -> str:
     """Format ALTER SYSTEM KILL SESSION text (validated, no trailing semicolon).
     Supports Oracle RAC instance routing via optional inst_id ('sid,serial#,@inst_id').
     """
@@ -128,7 +131,7 @@ def format_recovery_command_block(instance_id: int = 1001, instance_code: str = 
 class RemediationEngine:
     """Executes validated remediation subroutines with safety guardrails."""
 
-    def __init__(self, connection_config: Optional[Any] = None, guardrails: Optional[EnterpriseGuardrails] = None):
+    def __init__(self, connection_config: Any | None = None, guardrails: EnterpriseGuardrails | None = None):
         self.config = connection_config
         self.guardrails = guardrails or EnterpriseGuardrails()
         self.simulated = connection_config is None or getattr(connection_config, "use_simulation", True)
@@ -146,9 +149,9 @@ class RemediationEngine:
         action: str,
         sql_statement: str,
         target_object: str,
-        audit_data: Dict[str, Any],
+        audit_data: dict[str, Any],
         dry_run: bool = False,
-        message: Optional[str] = None
+        message: str | None = None
     ) -> RemediationResult:
         """Unified execution, validation, latency measurement, and audit pipeline for all remediation subroutines."""
         start = time.time()
@@ -202,13 +205,13 @@ class RemediationEngine:
         sid: int,
         serial: int,
         object_name: str,
-        inst_id: Optional[int] = None,
-        username: Optional[str] = None,
-        module: Optional[str] = None,
-        session_type: Optional[str] = "USER",
-        self_sid: Optional[int] = None,
-        instance_id: Optional[Union[int, str]] = None,
-        undo_check: Optional[Dict[str, Any]] = None,
+        inst_id: int | None = None,
+        username: str | None = None,
+        module: str | None = None,
+        session_type: str | None = "USER",
+        self_sid: int | None = None,
+        instance_id: int | str | None = None,
+        undo_check: dict[str, Any] | None = None,
         dry_run: bool = False,
         force_override: bool = False
     ) -> RemediationResult:
@@ -221,7 +224,11 @@ class RemediationEngine:
 
         # 1. Blast-radius user/process safety validation
         try:
-            from ascp_agent.guardrails import validate_session_kill_safety, GLOBAL_KILL_LIMITER, BlastRadiusViolationError
+            from ascp_agent.guardrails import (
+                GLOBAL_KILL_LIMITER,
+                BlastRadiusViolationError,
+                validate_session_kill_safety,
+            )
             validate_session_kill_safety(
                 target_sid=v_sid,
                 target_serial=v_serial,
@@ -351,7 +358,7 @@ class RemediationEngine:
             target_object="MSC_APPS_INSTANCES / MSC_ST_*",
             audit_data={"instance_id": v_inst, "validation": "No", "normalized_st_status": 0},
             dry_run=dry_run,
-            message=f"Executed Purge Staging Tables with Validation = No. MSC_ST_* cleared and MSC_APPS_INSTANCES.ST_STATUS normalized to 0."
+            message="Executed Purge Staging Tables with Validation = No. MSC_ST_* cleared and MSC_APPS_INSTANCES.ST_STATUS normalized to 0."
         )
 
     def execute_reset_pipe(self, pipe_name: str = "MSC_PIPE_1001", dry_run: bool = False) -> RemediationResult:

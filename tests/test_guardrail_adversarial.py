@@ -5,11 +5,14 @@ Referer header bypass prevention, approval binding, anti-replay, and TTL expirat
 Zero external dependency: runs cleanly on unittest or pytest.
 """
 
+from __future__ import annotations
+
 import time
 import unittest
+
 from ascp_agent.config import GuardrailsConfig
-from ascp_agent.guardrails import EnterpriseGuardrails, SecurityViolationError
 from ascp_agent.graph import create_ascp_diagnostic_graph
+from ascp_agent.guardrails import EnterpriseGuardrails, SecurityViolationError
 from ascp_agent.state import Command
 
 

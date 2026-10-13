@@ -1,7 +1,11 @@
 """Unit tests for the Drain Log Parsing Engine."""
 
+from __future__ import annotations
+
 import unittest
+
 from ascp_agent.drain_parser import DrainLogParser
+
 
 class TestDrainLogParser(unittest.TestCase):
     def setUp(self):

@@ -4,21 +4,40 @@ node functions, conditional routing, Human-in-the-Loop interrupt gates,
 and time-travel state debugging.
 """
 
+from __future__ import annotations
+
 import copy
-import time
+import hashlib
 import json
 import logging
+import time
 import uuid
-import hashlib
-from typing import Dict, Any, Optional, Callable, List, Tuple
-from ascp_agent.state import AgentState, DiagnosticState, Message, AIMessage, HumanMessage, Command, Send, InterruptSignal, interrupt
+from collections.abc import Callable
+from typing import Any
+
 from ascp_agent.drain_parser import DrainLogParser
-from ascp_agent.lock_engine import LockDiagnosticsEngine
-from ascp_agent.hitl_governance import HITLGovernanceEngine
-from ascp_agent.remediation import RemediationEngine, format_kill_session_sql, format_purge_staging_sql, format_recovery_command_block
-from ascp_agent.itsm_service_now import ServiceNowClient
 from ascp_agent.guardrails import EnterpriseGuardrails
-from ascp_agent.schema_validator import validate_schema_node, check_validation_routing
+from ascp_agent.hitl_governance import HITLGovernanceEngine
+from ascp_agent.itsm_service_now import ServiceNowClient
+from ascp_agent.lock_engine import LockDiagnosticsEngine
+from ascp_agent.remediation import (
+    RemediationEngine,
+    format_kill_session_sql,
+    format_purge_staging_sql,
+    format_recovery_command_block,
+)
+from ascp_agent.schema_validator import check_validation_routing, validate_schema_node
+from ascp_agent.state import (
+    AgentState,
+    AIMessage,
+    Command,
+    DiagnosticState,
+    HumanMessage,
+    InterruptSignal,
+    Message,
+    Send,
+    interrupt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +70,7 @@ class CheckpointRecord:
 class MemorySaver:
     """In-memory checkpointer supporting state snapshots and time-travel inspection with bounded memory."""
     def __init__(self, max_threads: int = 100, max_checkpoints_per_thread: int = 50):
-        self.threads: Dict[str, List[CheckpointRecord]] = {}
+        self.threads: dict[str, list[CheckpointRecord]] = {}
         self.max_threads = max_threads
         self.max_checkpoints_per_thread = max_checkpoints_per_thread
 
@@ -67,11 +86,11 @@ class MemorySaver:
             records.pop(0)
         return step
 
-    def get_latest(self, thread_id: str) -> Optional[CheckpointRecord]:
+    def get_latest(self, thread_id: str) -> CheckpointRecord | None:
         records = self.threads.get(thread_id, [])
         return records[-1] if records else None
 
-    def get_history(self, thread_id: str) -> List[CheckpointRecord]:
+    def get_history(self, thread_id: str) -> list[CheckpointRecord]:
         return self.threads.get(thread_id, [])
 
 def serialize_state_payload(state: Any) -> Any:
@@ -111,7 +130,7 @@ class PostgresSaver:
     across container restarts. Automatically falls back to memory persistence if PostgreSQL
     is offline or running in standalone test environments.
     """
-    def __init__(self, dsn: Optional[str] = None):
+    def __init__(self, dsn: str | None = None):
         self.dsn = dsn
         self._memory_backup = MemorySaver()
         self._psycopg = None
@@ -137,7 +156,7 @@ class PostgresSaver:
                         CREATE INDEX IF NOT EXISTS idx_ascp_ckpt_thread ON ascp_agent_checkpoints(thread_id);
                     """)
                 conn.commit()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- fallback to in-memory checkpointer if PostgreSQL is offline
             self._psycopg = None
 
     def save(self, thread_id: str, state: DiagnosticState, next_node: str) -> int:
@@ -145,63 +164,60 @@ class PostgresSaver:
         if self._psycopg and self.dsn:
             try:
                 serialized = serialize_state_payload(dict(state))
-                with self._psycopg.connect(self.dsn) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "INSERT INTO ascp_agent_checkpoints (thread_id, step_index, state_payload, next_node) VALUES (%s, %s, %s, %s)",
-                            (thread_id, step, json.dumps(serialized), next_node)
-                        )
+                with self._psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO ascp_agent_checkpoints (thread_id, step_index, state_payload, next_node) VALUES (%s, %s, %s, %s)",
+                        (thread_id, step, json.dumps(serialized), next_node)
+                    )
                     conn.commit()
             except Exception:
                 logger.exception("Postgres checkpoint write failed for thread %s", thread_id)
         return step
 
-    def get_latest(self, thread_id: str) -> Optional[CheckpointRecord]:
+    def get_latest(self, thread_id: str) -> CheckpointRecord | None:
         mem_latest = self._memory_backup.get_latest(thread_id)
         if mem_latest is not None:
             return mem_latest
         if self._psycopg and self.dsn:
             try:
-                with self._psycopg.connect(self.dsn) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id DESC LIMIT 1",
-                            (thread_id,)
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            step_index, state_json, next_node = row
-                            raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
-                            restored = deserialize_state_payload(raw_dict)
-                            state_obj = DiagnosticState(restored)
-                            record = CheckpointRecord(step_index, state_obj, next_node)
-                            self._memory_backup.threads.setdefault(thread_id, []).append(record)
-                            return record
+                with self._psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id DESC LIMIT 1",
+                        (thread_id,)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        step_index, state_json, next_node = row
+                        raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
+                        restored = deserialize_state_payload(raw_dict)
+                        state_obj = DiagnosticState(restored)
+                        record = CheckpointRecord(step_index, state_obj, next_node)
+                        self._memory_backup.threads.setdefault(thread_id, []).append(record)
+                        return record
             except Exception:
                 logger.exception("Failed to query checkpoint from PostgreSQL for thread %s", thread_id)
         return None
 
-    def get_history(self, thread_id: str) -> List[CheckpointRecord]:
+    def get_history(self, thread_id: str) -> list[CheckpointRecord]:
         mem_hist = self._memory_backup.get_history(thread_id)
         if mem_hist:
             return mem_hist
         if self._psycopg and self.dsn:
             try:
-                with self._psycopg.connect(self.dsn) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id ASC",
-                            (thread_id,)
-                        )
-                        records = []
-                        for row in cur.fetchall():
-                            step_index, state_json, next_node = row
-                            raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
-                            restored = deserialize_state_payload(raw_dict)
-                            records.append(CheckpointRecord(step_index, DiagnosticState(restored), next_node))
-                        if records:
-                            self._memory_backup.threads[thread_id] = list(records)
-                            return records
+                with self._psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id ASC",
+                        (thread_id,)
+                    )
+                    records = []
+                    for row in cur.fetchall():
+                        step_index, state_json, next_node = row
+                        raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
+                        restored = deserialize_state_payload(raw_dict)
+                        records.append(CheckpointRecord(step_index, DiagnosticState(restored), next_node))
+                    if records:
+                        self._memory_backup.threads[thread_id] = list(records)
+                        return records
             except Exception:
                 logger.exception("Failed to query checkpoint history from PostgreSQL for thread %s", thread_id)
         return []
@@ -210,12 +226,12 @@ class StateGraph:
     """StateGraph engine implementing directed state transitions, conditional edges, and HITL gates."""
     def __init__(self, state_schema=DiagnosticState):
         self.state_schema = state_schema
-        self.nodes: Dict[str, Callable[[DiagnosticState], Dict[str, Any]]] = {}
-        self.conditional_edges: Dict[str, Tuple[Callable[[DiagnosticState], str], Dict[str, str]]] = {}
-        self.edges: Dict[str, str] = {}
-        self.entry_point: Optional[str] = None
+        self.nodes: dict[str, Callable[[DiagnosticState], dict[str, Any]]] = {}
+        self.conditional_edges: dict[str, tuple[Callable[[DiagnosticState], str], dict[str, str]]] = {}
+        self.edges: dict[str, str] = {}
+        self.entry_point: str | None = None
 
-    def add_node(self, name: str, func: Callable[[DiagnosticState], Dict[str, Any]]):
+    def add_node(self, name: str, func: Callable[[DiagnosticState], dict[str, Any]]):
         self.nodes[name] = func
 
     def set_entry_point(self, name: str):
@@ -224,10 +240,10 @@ class StateGraph:
     def add_edge(self, from_node: str, to_node: str):
         self.edges[from_node] = to_node
 
-    def add_conditional_edges(self, from_node: str, router_func: Callable[[DiagnosticState], str], route_map: Dict[str, str]):
+    def add_conditional_edges(self, from_node: str, router_func: Callable[[DiagnosticState], str], route_map: dict[str, str]):
         self.conditional_edges[from_node] = (router_func, route_map)
 
-    def compile(self, checkpointer: Optional[MemorySaver] = None):
+    def compile(self, checkpointer: MemorySaver | None = None):
         return CompiledStateGraph(self, checkpointer or MemorySaver())
 
 class CompiledStateGraph:
@@ -235,13 +251,13 @@ class CompiledStateGraph:
     def __init__(self, graph: StateGraph, checkpointer: MemorySaver):
         self.graph = graph
         self.checkpointer = checkpointer
-        self._guardrails_by_thread: Dict[str, EnterpriseGuardrails] = {}
+        self._guardrails_by_thread: dict[str, EnterpriseGuardrails] = {}
 
     def invoke(
         self,
-        initial_state: Optional[Dict[str, Any]] = None,
-        config: Optional[Dict[str, Any]] = None,
-        resume_command: Optional[Command] = None
+        initial_state: dict[str, Any] | None = None,
+        config: dict[str, Any] | None = None,
+        resume_command: Command | None = None
     ) -> DiagnosticState:
         """Executes the state graph until an interrupt gate or END is reached."""
         config = config or {}
@@ -348,7 +364,7 @@ class CompiledStateGraph:
         state["completed"] = True
         return state
 
-    def get_state_history(self, config: Dict[str, Any]) -> List[CheckpointRecord]:
+    def get_state_history(self, config: dict[str, Any]) -> list[CheckpointRecord]:
         thread_id = config.get("configurable", {}).get("thread_id", "default_thread")
         return self.checkpointer.get_history(thread_id)
 
@@ -356,7 +372,7 @@ class CompiledStateGraph:
 # 6-Step Node Implementations matching End-to-End Execution Plan
 # -------------------------------------------------------------
 
-def parse_worker_log_node(sub_state: Dict[str, Any]) -> dict:
+def parse_worker_log_node(sub_state: dict[str, Any]) -> dict:
     """Parallel worker node for parsing concurrent worker logs (.req/.log) or staging tables via Send primitive."""
     worker_id = sub_state.get("worker_id", "WORKER_1")
     target_table = sub_state.get("table", "MSC_ST_DEMANDS")
@@ -665,7 +681,7 @@ def rca_hypothesis_node(state: AgentState) -> dict:
         "messages": [AIMessage(content=f"RCA Synthesis: {thesis} | Diagnostic Confidence: {confidence:.1f}% | Risk Tier: {risk}.")]
     }
 
-ACTION_EXECUTORS: Dict[str, Callable[[RemediationEngine, AgentState, bool], Any]] = {
+ACTION_EXECUTORS: dict[str, Callable[[RemediationEngine, AgentState, bool], Any]] = {
     "KILL_SESSION": lambda eng, st, dry: eng.execute_kill_session(
         sid=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("sid") or st.get("context", {}).get("target_sid", 412),
         serial=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("serial_number") or st.get("context", {}).get("target_serial", 28419),
@@ -765,7 +781,7 @@ def hitl_gate_node(state: AgentState) -> dict:
     target_obj = blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS"))
     target_inst = blocker.get("inst_id")
     approval_fingerprint = hashlib.sha256(
-        f"{action}:{target_sid}:{target_serial}:{target_obj}:{target_inst}".encode("utf-8")
+        f"{action}:{target_sid}:{target_serial}:{target_obj}:{target_inst}".encode()
     ).hexdigest()
 
     # If approval is required and neither approved nor human_response evaluated yet:
@@ -886,7 +902,7 @@ def route_from_classification(state: AgentState) -> str:
         return "oracle_lock_node"
     return "rca_hypothesis_node"
 
-def create_ascp_diagnostic_graph(checkpointer: Optional[Any] = None) -> CompiledStateGraph:
+def create_ascp_diagnostic_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     """Builds and compiles the 6-step ASCP Diagnostic Control Plane StateGraph with Send support."""
     builder = StateGraph(AgentState)
 
@@ -921,7 +937,7 @@ def create_ascp_diagnostic_graph(checkpointer: Optional[Any] = None) -> Compiled
 
     return builder.compile(checkpointer=checkpointer or PostgresSaver())
 
-def create_self_healing_validation_graph(checkpointer: Optional[Any] = None) -> CompiledStateGraph:
+def create_self_healing_validation_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     """Builds and compiles dedicated self-healing Pydantic schema validation graph."""
     builder = StateGraph(AgentState)
 

@@ -3,20 +3,23 @@ Implements the fixed-depth parse tree algorithm (Drain) to tokenize unstructured
 concurrent request logs and trace dumps into structured log templates and parameter vectors.
 """
 
+from __future__ import annotations
+
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any
+
 
 class Node:
     """Node in the Drain prefix tree."""
-    def __init__(self, depth: int = 1, digit_or_token: Optional[str] = None):
+    def __init__(self, depth: int = 1, digit_or_token: str | None = None):
         self.depth = depth
         self.digit_or_token = digit_or_token
-        self.children: Dict[str, 'Node'] = {}
-        self.log_clusters: List['LogCluster'] = []
+        self.children: dict[str, Node] = {}
+        self.log_clusters: list[LogCluster] = []
 
 class LogCluster:
     """A cluster of log messages sharing the same template."""
-    def __init__(self, log_template_tokens: List[str], log_id: int):
+    def __init__(self, log_template_tokens: list[str], log_id: int):
         self.log_template_tokens = log_template_tokens
         self.log_id = log_id
         self.size = 1
@@ -28,11 +31,11 @@ class LogCluster:
 class DrainLogParser:
     """Fixed-depth Parse Tree Log Parser (Drain) optimized for Oracle EBS logs."""
 
-    TIMESTAMP_PATTERNS = [
+    TIMESTAMP_PATTERNS = (
         re.compile(r"^\d{2}-[A-Z]{3}-\d{4}\s+\d{2}:\d{2}:\d{2}$"),
         re.compile(r"^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}"),
-        re.compile(r"^\d{2}:\d{2}:\d{2}$")
-    ]
+        re.compile(r"^\d{2}:\d{2}:\d{2}$"),
+    )
 
     ORACLE_OBJECT_PATTERN = re.compile(r"^(MSC|MLOG\$|APPLSYS|APPS|BOM|INV|WIP|MRP|FND)_[A-Z0-9_\$]+$", re.IGNORECASE)
     DIGIT_PATTERN = re.compile(r"^\d+$")
@@ -62,11 +65,11 @@ class DrainLogParser:
         self.max_clusters = max_clusters
         self.max_leaf_clusters = max_leaf_clusters
         self.root_node = Node(depth=1)
-        self.clusters: List[LogCluster] = []
+        self.clusters: list[LogCluster] = []
 
-    def _preprocess_tokens(self, line: str) -> Tuple[List[str], Dict[str, Any]]:
+    def _preprocess_tokens(self, line: str) -> tuple[list[str], dict[str, Any]]:
         """Normalize line and extract recognized domain variables while preserving critical ORA codes."""
-        params: Dict[str, Any] = {"TARGET_OBJECTS": []}
+        params: dict[str, Any] = {"TARGET_OBJECTS": []}
         
         # 1. Extract bracketed timestamps e.g. [12-OCT-2025 04:12:01]
         ts_match = self.TS_BRACKET_PATTERN.search(line)
@@ -112,7 +115,7 @@ class DrainLogParser:
 
         return normalized_tokens, params
 
-    def _tree_search(self, root: Node, tokens: List[str]) -> Optional[LogCluster]:
+    def _tree_search(self, root: Node, tokens: list[str]) -> LogCluster | None:
         """Traverse fixed-depth parse tree to locate matching cluster candidate."""
         seq_len = len(tokens)
         if seq_len == 0:
@@ -141,7 +144,7 @@ class DrainLogParser:
             current_depth += 1
 
         # Search leaf cluster list for best similarity match
-        best_cluster: Optional[LogCluster] = None
+        best_cluster: LogCluster | None = None
         best_sim = -1.0
 
         for cluster in curr_node.log_clusters:
@@ -152,7 +155,7 @@ class DrainLogParser:
 
         return best_cluster
 
-    def _calculate_similarity(self, template_tokens: List[str], tokens: List[str]) -> float:
+    def _calculate_similarity(self, template_tokens: list[str], tokens: list[str]) -> float:
         """Sequence similarity metric between cluster template and incoming tokens with early short-circuit."""
         n = len(tokens)
         if len(template_tokens) != n or n == 0:
@@ -172,7 +175,7 @@ class DrainLogParser:
 
         return matches / float(n)
 
-    def _add_to_tree(self, root: Node, cluster: LogCluster, tokens: List[str]):
+    def _add_to_tree(self, root: Node, cluster: LogCluster, tokens: list[str]):
         """Insert new cluster into the prefix tree with bounded leaf cluster size."""
         seq_len = len(tokens)
         len_str = str(seq_len)
@@ -210,7 +213,7 @@ class DrainLogParser:
 
         curr_node.log_clusters.append(cluster)
 
-    def parse_line(self, line: str) -> Dict[str, Any]:
+    def parse_line(self, line: str) -> dict[str, Any]:
         """Parse a single raw log line into structured template & parameters with cluster capacity cap."""
         raw_line = line.strip()
         if not raw_line:
@@ -259,7 +262,7 @@ class DrainLogParser:
             "cluster_id": match.log_id if match else len(self.clusters)
         }
 
-    def parse_log_stream(self, lines, max_lines: Optional[int] = None):
+    def parse_log_stream(self, lines, max_lines: int | None = None):
         """Generator yielding parsed lines to avoid massive memory allocations."""
         count = 0
         for line in lines:
@@ -270,7 +273,7 @@ class DrainLogParser:
                 yield self.parse_line(line_str)
                 count += 1
 
-    def parse_log_text(self, log_content: str, max_lines: Optional[int] = None) -> List[Dict[str, Any]]:
+    def parse_log_text(self, log_content: str, max_lines: int | None = None) -> list[dict[str, Any]]:
         """Parse multi-line log or trace dump with optional line cap."""
         if not log_content:
             return []
@@ -279,7 +282,7 @@ class DrainLogParser:
             lines = lines[-max_lines:]
         return list(self.parse_log_stream(lines, max_lines=max_lines))
 
-    def parse_file(self, filepath: str, max_lines: Optional[int] = None) -> List[Dict[str, Any]]:
+    def parse_file(self, filepath: str, max_lines: int | None = None) -> list[dict[str, Any]]:
         """Standardized file parser routing file contents directly through parse_log_text."""
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             return self.parse_log_text(f.read(), max_lines=max_lines)

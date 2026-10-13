@@ -9,30 +9,30 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Dict, Generator, List, Optional, Tuple
+from typing import Any
 
-from ascp_agent.config import OracleConfig, DEFAULT_CONFIG
+from ascp_agent.config import DEFAULT_CONFIG, OracleConfig
 
 logger = logging.getLogger(__name__)
 
 
 class OracleQueryError(RuntimeError):
     """Raised when live Oracle database query execution fails."""
-    pass
 
 
 @dataclass
 class QueryResult:
     """Standardized query execution result container."""
-    columns: List[str]
-    rows: List[Tuple[Any, ...]]
+    columns: list[str]
+    rows: list[tuple[Any, ...]]
     row_count: int
     execution_time_ms: float
     is_simulated: bool = False
 
-    def to_dicts(self) -> List[Dict[str, Any]]:
+    def to_dicts(self) -> list[dict[str, Any]]:
         """Converts tabular rows into list of dictionaries keyed by lowercase column names."""
         cols = [c.lower() for c in self.columns]
         return [dict(zip(cols, row)) for row in self.rows]
@@ -45,11 +45,11 @@ class OracleConnectionPool:
     and provides unified synchronous and asynchronous context managers.
     """
 
-    def __init__(self, config: Optional[OracleConfig] = None):
+    def __init__(self, config: OracleConfig | None = None):
         self.config: OracleConfig = config or DEFAULT_CONFIG.oracle
-        self._oracledb: Optional[Any] = None
-        self._sync_pool: Optional[Any] = None
-        self._async_pool: Optional[Any] = None
+        self._oracledb: Any | None = None
+        self._sync_pool: Any | None = None
+        self._async_pool: Any | None = None
         self._is_connected: bool = False
         self._driver_loaded: bool = False
         self._init_driver()
@@ -97,7 +97,7 @@ class OracleConnectionPool:
             self._is_connected = True
             logger.info("Oracle synchronous connection pool created successfully.")
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- fallback to simulation on any driver or connection error
             logger.warning(f"Failed to create Oracle connection pool ({e}). Operating in simulation fallback.")
             self._sync_pool = None
             self._is_connected = False
@@ -126,7 +126,7 @@ class OracleConnectionPool:
             self._is_connected = True
             logger.info("Oracle asynchronous connection pool created successfully.")
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- fallback to simulation on any driver or connection error
             logger.warning(f"Failed to create Oracle async pool ({e}). Operating in simulation fallback.")
             self._async_pool = None
             self._is_connected = False
@@ -166,7 +166,7 @@ class OracleConnectionPool:
     def execute_query(
         self,
         sql: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
         timeout_sec: float = 30.0
     ) -> QueryResult:
         """Executes a SQL query synchronously with timing metrics and auto-recovery."""
@@ -211,7 +211,7 @@ class OracleConnectionPool:
     async def execute_query_async(
         self,
         sql: str,
-        params: Optional[Dict[str, Any]] = None
+        params: dict[str, Any] | None = None
     ) -> QueryResult:
         """Executes a non-blocking asynchronous SQL query."""
         start_time = time.time()
@@ -253,7 +253,7 @@ class OracleConnectionPool:
             is_simulated=True
         )
 
-    def ping(self) -> Dict[str, Any]:
+    def ping(self) -> dict[str, Any]:
         """Performs health check ping against database connection pool."""
         if self.is_simulation:
             return {
@@ -273,7 +273,7 @@ class OracleConnectionPool:
                 "driver": "python-oracledb (thin)",
                 "latency_ms": round(latency, 2)
             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- ping healthcheck reports all failure modes
             return {
                 "alive": False,
                 "mode": "DISCONNECTED",
@@ -286,25 +286,25 @@ class OracleConnectionPool:
         if self._sync_pool is not None:
             try:
                 self._sync_pool.close()
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.debug("Error closing sync pool: %s", exc)
             self._sync_pool = None
 
         if self._async_pool is not None:
             try:
                 asyncio.run(self._async_pool.close())
-            except Exception:
-                pass
+            except OSError as exc:
+                logger.debug("Error closing async pool: %s", exc)
             self._async_pool = None
 
         self._is_connected = False
 
 
 # Module-level default singleton pool
-_GLOBAL_POOL: Optional[OracleConnectionPool] = None
+_GLOBAL_POOL: OracleConnectionPool | None = None
 
 
-def get_oracle_pool(config: Optional[OracleConfig] = None) -> OracleConnectionPool:
+def get_oracle_pool(config: OracleConfig | None = None) -> OracleConnectionPool:
     """Returns singleton Oracle connection pool instance."""
     global _GLOBAL_POOL
     if _GLOBAL_POOL is None:

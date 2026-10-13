@@ -5,8 +5,11 @@ Validates boundary values, type safety, and SQL injection sanitization on:
 3. _validated_mode (snapshot refresh modes)
 """
 
+from __future__ import annotations
+
 import unittest
-from ascp_agent.remediation import _require_int, _require_identifier, _validated_mode
+
+from ascp_agent.remediation import _require_identifier, _require_int, _validated_mode
 
 
 class TestPropertyValidation(unittest.TestCase):

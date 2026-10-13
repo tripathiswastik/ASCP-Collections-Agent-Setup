@@ -7,13 +7,15 @@ Validates the full state machine life cycle:
 5. Pre-Kill Session Re-Check (Session cleared while awaiting approval)
 """
 
-import unittest
+from __future__ import annotations
+
 import hashlib
+import unittest
 from unittest import mock
 
 from ascp_agent.graph import create_ascp_diagnostic_graph
-from ascp_agent.state import Command
 from ascp_agent.simulator import SCENARIOS
+from ascp_agent.state import Command
 
 
 class TestEndToEndHITLFlow(unittest.TestCase):

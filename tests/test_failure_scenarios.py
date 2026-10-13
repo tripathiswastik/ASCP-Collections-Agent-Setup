@@ -1,14 +1,18 @@
 """Unit and integration tests for failure catalog, ServiceNow payload, and guardrails."""
 
+from __future__ import annotations
+
 import unittest
+
 from ascp_agent.failure_modes import FAILURE_CATALOG, identify_failure_mode
-from ascp_agent.itsm_service_now import ServiceNowClient
 from ascp_agent.guardrails import (
     EnterpriseGuardrails,
     ExecutionCapExceededError,
+    GuardrailsConfig,
     SecurityViolationError,
-    GuardrailsConfig
 )
+from ascp_agent.itsm_service_now import ServiceNowClient
+
 
 class TestFailureScenariosAndGuardrails(unittest.TestCase):
     def test_failure_catalog_coverage(self):

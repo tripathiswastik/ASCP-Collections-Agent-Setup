@@ -4,8 +4,9 @@ Purpose: Unit tests for OracleConnectionPool and query execution with simulation
 Runs-in: Local development shell, CI test runner, or autonomous agent evaluation runtime.
 """
 
+from __future__ import annotations
+
 import unittest
-from unittest.mock import MagicMock, patch
 
 from ascp_agent.config import OracleConfig
 from ascp_agent.db import OracleConnectionPool, QueryResult, get_oracle_pool

@@ -3,8 +3,11 @@ Implements risk tiers (LOW, MEDIUM, HIGH) to safeguard production databases
 from unauthorized session termination or destructive DDL/DML.
 """
 
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, Optional
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
 
 @dataclass
 class HITLGovernanceRule:
@@ -15,7 +18,7 @@ class HITLGovernanceRule:
     requires_dry_run_validation: bool
     description: str
 
-GOVERNANCE_RULES: Dict[str, HITLGovernanceRule] = {
+GOVERNANCE_RULES: dict[str, HITLGovernanceRule] = {
     "INSPECT_LOCKS": HITLGovernanceRule(
         risk_tier="LOW",
         action_type="Read-only Database Introspection",
@@ -142,12 +145,12 @@ class HITLGovernanceEngine:
     @staticmethod
     def format_approval_payload(
         action: str,
-        target_sid: Optional[int] = None,
-        target_serial: Optional[int] = None,
-        target_object: Optional[str] = None,
-        lock_mode: Optional[str] = None,
-        reasoning: Optional[str] = None
-    ) -> Dict[str, Any]:
+        target_sid: int | None = None,
+        target_serial: int | None = None,
+        target_object: str | None = None,
+        lock_mode: str | None = None,
+        reasoning: str | None = None
+    ) -> dict[str, Any]:
         """Constructs structured approval request payload for HITL gates."""
         rule = HITLGovernanceEngine.evaluate_action_risk(action)
         from ascp_agent.remediation import format_kill_session_sql, format_purge_staging_sql

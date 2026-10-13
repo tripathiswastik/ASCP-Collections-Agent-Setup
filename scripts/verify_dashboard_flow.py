@@ -4,20 +4,22 @@ Purpose: End-to-end verification script testing live API endpoints and dashboard
 Runs-in: Standalone client process communicating with local or containerized ASCP Diagnostic Web Server.
 """
 
-import urllib.request
-import urllib.error
+from __future__ import annotations
+
 import json
-import sys
 import os
-import time
+import sys
 import threading
+import time
+import urllib.error
+import urllib.request
 
 # Add root directory to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from web.server import ThreadedASCPDiagnosticServer, ASCPDiagnosticHandler, OPERATOR_TOKENS
+from web.server import OPERATOR_TOKENS, ASCPDiagnosticHandler, ThreadedASCPDiagnosticServer
 
 TOKEN = "e2e-verification-approver-token"
 

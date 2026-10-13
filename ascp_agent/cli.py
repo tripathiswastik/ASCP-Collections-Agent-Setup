@@ -2,17 +2,19 @@
 Provides interactive triage commands for DBAs and automation pipelines.
 """
 
+from __future__ import annotations
+
 import argparse
-import sys
 import json
 import os
+import sys
 
 from ascp_agent.drain_parser import DrainLogParser
-from ascp_agent.lock_engine import LockDiagnosticsEngine
-from ascp_agent.pipeline_monitor import PipelineMonitor
 from ascp_agent.graph import create_ascp_diagnostic_graph
-from ascp_agent.state import Command
+from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.simulator import SCENARIOS
+from ascp_agent.state import Command
+
 
 def print_banner():
     banner = """
@@ -45,7 +47,7 @@ def cmd_locks(args):
     engine = LockDiagnosticsEngine(simulated_scenario=args.scenario)
     telemetry = engine.execute_hierarchical_lock_query()
 
-    print(f"\n[+] Executing Hierarchical Root Blocker Query (CONNECT BY PRIOR):")
+    print("\n[+] Executing Hierarchical Root Blocker Query (CONNECT BY PRIOR):")
     print("=" * 80)
     if not telemetry:
         print("    No active blocking locks found across MSC_ST_* staging structures.")

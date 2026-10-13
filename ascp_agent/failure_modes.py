@@ -3,16 +3,19 @@ Codifies Oracle ASCP failure signatures, root causes, Metalink / MOS Doc IDs,
 and technical remediation actions.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, Optional, List
+
 from ascp_agent.lock_engine import get_sql_query
+
 
 @dataclass
 class FailureModeDef:
     code: str
     error_pattern: str
     domain: str
-    target_objects: List[str]
+    target_objects: list[str]
     root_cause_mechanism: str
     recommended_action: str
     risk_tier: str  # LOW, MEDIUM, HIGH
@@ -21,7 +24,7 @@ class FailureModeDef:
     detailed_explanation: str
     diagnostic_query_id: str = "HIERARCHICAL_LOCK_TREE"
 
-FAILURE_CATALOG: Dict[str, FailureModeDef] = {
+FAILURE_CATALOG: dict[str, FailureModeDef] = {
     "ORA-00054": FailureModeDef(
         code="ORA-00054",
         error_pattern="resource busy and acquire with NOWAIT specified",
@@ -154,7 +157,7 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
     )
 }
 
-def identify_failure_mode(log_text: str) -> Optional[FailureModeDef]:
+def identify_failure_mode(log_text: str) -> FailureModeDef | None:
     """Pattern match against log text to identify cataloged failure mode."""
     import re
     for code, defn in FAILURE_CATALOG.items():

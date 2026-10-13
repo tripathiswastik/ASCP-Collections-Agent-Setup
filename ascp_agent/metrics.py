@@ -7,9 +7,10 @@ Tracks and exports:
 - Prometheus-compatible text format export
 """
 
-import time
+from __future__ import annotations
+
 import threading
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 
 class OperationalMetricsTracker:
@@ -22,8 +23,8 @@ class OperationalMetricsTracker:
         self.total_approvals_granted: int = 0
         self.total_approvals_rejected: int = 0
         self.wrong_diagnosis_count: int = 0
-        self.approval_latencies: List[float] = []
-        self.resolution_times: List[float] = []  # MTTR measurements
+        self.approval_latencies: list[float] = []
+        self.resolution_times: list[float] = []  # MTTR measurements
 
     def record_diagnosis(self, is_wrong: bool = False, duration_seconds: float = 0.0) -> None:
         with self._lock:
@@ -53,7 +54,7 @@ class OperationalMetricsTracker:
             if was_wrong:
                 self.wrong_diagnosis_count += 1
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         with self._lock:
             decisions_total = self.total_approvals_granted + self.total_approvals_rejected
             approved_share = round((self.total_approvals_granted / decisions_total), 4) if decisions_total > 0 else 0.0

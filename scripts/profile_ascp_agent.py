@@ -5,21 +5,24 @@ Runs cProfile and memory diagnostics across:
 3. CompiledStateGraph execution (full LangGraph super-step pipeline)
 """
 
+from __future__ import annotations
+
 import cProfile
-import pstats
 import io
-import time
 import os
+import pstats
 import sys
+import time
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from ascp_agent.drain_parser import DrainLogParser
-from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.graph import create_ascp_diagnostic_graph
+from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.simulator import SCENARIOS
+
 
 def benchmark_drain_parser(iterations=500):
     parser = DrainLogParser()
@@ -38,7 +41,7 @@ def benchmark_graph_execution(iterations=50):
     graph = create_ascp_diagnostic_graph()
     sample_logs = SCENARIOS["ora_00054_mode6"]["logs"]
     for i in range(iterations):
-        state = graph.invoke(
+        _ = graph.invoke(
             initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": sample_logs},
             config={"configurable": {"thread_id": f"prof-thread-{i}"}}
         )

@@ -4,11 +4,11 @@ between two concurrent live database sessions, triggers LockDiagnosticsEngine
 against dynamic V$ views, and asserts the root blocker is accurately isolated.
 """
 
+from __future__ import annotations
+
 import os
 import sys
-import time
 import unittest
-from typing import Optional, Dict, Any
 
 # Add workspace root to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -19,7 +19,7 @@ from ascp_agent.config import OracleConfig
 from ascp_agent.lock_engine import LockDiagnosticsEngine, OracleConnectionPool
 
 
-def get_live_oracle_config() -> Optional[OracleConfig]:
+def get_live_oracle_config() -> OracleConfig | None:
     """Retrieve database connection settings from environment or defaults."""
     host = os.environ.get("ORACLE_TEST_HOST", "localhost")
     port = int(os.environ.get("ORACLE_TEST_PORT", "1521"))
@@ -61,7 +61,7 @@ def is_oracle_live_available() -> bool:
         )
         conn.close()
         return True
-    except Exception:
+    except (oracledb.DatabaseError, OSError, TimeoutError):
         return False
 
 
@@ -84,13 +84,12 @@ class TestOracleLiveIntegration(unittest.TestCase):
             host=cls.config.host,
             port=cls.config.port,
             service_name=cls.config.service_name
-        ) as conn:
-            with conn.cursor() as cur:
-                try:
-                    cur.execute("DROP TABLE TEST_MSC_ST_DEMANDS PURGE")
-                except Exception:
-                    pass
-                cur.execute("""
+        ) as conn, conn.cursor() as cur:
+            try:
+                cur.execute("DROP TABLE TEST_MSC_ST_DEMANDS PURGE")
+            except Exception:  # noqa: BLE001, S110 -- table may not exist yet on initial setup
+                pass
+            cur.execute("""
                     CREATE TABLE TEST_MSC_ST_DEMANDS (
                         DEMAND_ID NUMBER PRIMARY KEY,
                         INVENTORY_ITEM_ID NUMBER,
@@ -100,8 +99,8 @@ class TestOracleLiveIntegration(unittest.TestCase):
                         PROCESS_STATUS NUMBER
                     )
                 """)
-                cur.execute("INSERT INTO TEST_MSC_ST_DEMANDS VALUES (101, 10001, 204, SYSDATE, 50, 1)")
-                conn.commit()
+            cur.execute("INSERT INTO TEST_MSC_ST_DEMANDS VALUES (101, 10001, 204, SYSDATE, 50, 1)")
+            conn.commit()
 
     @classmethod
     def tearDownClass(cls):
@@ -113,11 +112,10 @@ class TestOracleLiveIntegration(unittest.TestCase):
                     host=cls.config.host,
                     port=cls.config.port,
                     service_name=cls.config.service_name
-                ) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("DROP TABLE TEST_MSC_ST_DEMANDS PURGE")
-                        conn.commit()
-            except Exception:
+                ) as conn, conn.cursor() as cur:
+                    cur.execute("DROP TABLE TEST_MSC_ST_DEMANDS PURGE")
+                    conn.commit()
+            except Exception:  # noqa: BLE001, S110 -- ignore drop error on teardown
                 pass
 
     def test_reproduce_ora_00054_and_isolate_root_blocker(self):

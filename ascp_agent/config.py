@@ -2,13 +2,14 @@
 Includes Oracle connection profiles, ITSM endpoints, guardrail limits, and runtime flags.
 """
 
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Any
+
 
 class ConfigValidationError(RuntimeError, ValueError):
     """Raised when configuration fails fail-closed validation."""
-    pass
 
 @dataclass
 class OracleConfig:
@@ -31,7 +32,7 @@ class OracleConfig:
     purge_stg_tbl_cntrl: str = "Yes"                     # MSC: Purge Stg Tbl Cntrl
     refresh_snapshots_timeout_min: int = 120             # MSC: Refresh Snapshots Pending Timeout
     purge_batch_size: int = 25000                        # MRP: Purge Batch Size
-    db_links: Dict[str, str] = field(default_factory=lambda: {"source_to_aps": "A2M_DBLINK", "aps_to_source": "M2A_DBLINK"})
+    db_links: dict[str, str] = field(default_factory=lambda: {"source_to_aps": "A2M_DBLINK", "aps_to_source": "M2A_DBLINK"})
 
     def __post_init__(self) -> None:
         if not self.use_simulation and not self.password:
