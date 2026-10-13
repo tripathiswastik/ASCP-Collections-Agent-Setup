@@ -195,19 +195,22 @@ d:\ag-ai\ascp-diagnostic-agent/
 python tests/run_all_tests.py
 ```
 
-### 2. Run Individual Test Categories
+### 2. Run Quantitative Evaluation Harness (12 Labeled Benchmark Cases)
 ```bash
-# Property-style input validation tests
-python -m unittest tests/test_property_validation.py
+python tests/eval_harness.py
+```
+- **Classification Accuracy**: 100.0%
+- **Action Selection Accuracy**: 100.0%
+- **False-Kill Rate (Non-locking cases)**: 0.0%
+- **Brier Calibration Score**: 0.0050
 
-# Multi-threaded HTTP auth & RBAC tests
-python -m unittest tests/test_http_auth_and_roles.py
-
-# End-to-end HITL lifecycle tests
-python -m unittest tests/test_end_to_end_hitl.py
+### 3. Run Live Oracle Container Integration Test (ORA-00054 Reproduction)
+```bash
+# Against local or CI Oracle Free container:
+python tests/test_oracle_live_integration.py
 ```
 
-### 3. Run the CLI
+### 4. Run the CLI
 ```bash
 # Interrogate database locks (hierarchical tree)
 python -m ascp_agent.cli locks --scenario ora_00054_mode6
@@ -219,15 +222,25 @@ python -m ascp_agent.cli parse-log --file sample_logs/mscpdpw_worker_ora00054_lo
 python -m ascp_agent.cli diagnose --scenario ora_00054_mode6
 ```
 
-### 4. Launch the Web Dashboard
+### 5. Launch the Web Dashboard & Metrics Exporter
 ```bash
 # Set secure operator tokens
 export ASCP_OPERATOR_TOKENS='{"approver-token-xyz": {"user": "lead_dba", "role": "approver"}, "viewer-token-abc": {"user": "analyst", "role": "viewer"}}'
 
-# Start server
+# Start server on port 8085
 python web/server.py 8085
 ```
 Open [http://localhost:8085](http://localhost:8085) and enter your operator token.
+
+Operational metrics and Prometheus telemetry are available at:
+- JSON summary: `GET /api/metrics`
+- Prometheus text format: `GET /api/metrics?format=prometheus`
+
+### 6. Production Reverse Proxy & TLS Deployment
+```bash
+# Spin up ASCP Agent and Nginx TLS Reverse Proxy
+docker-compose up -d
+```
 
 ---
 

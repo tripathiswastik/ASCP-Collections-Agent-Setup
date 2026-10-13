@@ -84,7 +84,14 @@ SQL_QUERY_REGISTRY: Dict[str, str] = {
     "RESET_REGISTRY": "UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = :instance_id; COMMIT;",
     "ALIGN_INDEXES": "EXEC MSC_CL_EXCHANGE_PARTTN.ALIGN_INDEX_DEFS('{table_name}');",
     "PURGE_PIPE": "EXEC DBMS_PIPE.PURGE('MSC_PIPE_{inst}');",
-    "REFRESH_SNAPSHOT": "EXEC DBMS_SNAPSHOT.REFRESH('{mview_name}', 'F');"
+    "REFRESH_SNAPSHOT": "EXEC DBMS_SNAPSHOT.REFRESH('{mview_name}', 'F');",
+    "DEADLOCK_TRACE_CHECK": "SELECT sid, username, status, sql_id FROM v$session WHERE status = 'ACTIVE';",
+    "UNDO_RETENTION_CHECK": "SELECT tablespace_name, status, retention FROM dba_tablespaces WHERE contents = 'UNDO';",
+    "TABLESPACE_QUOTA_CHECK": "SELECT tablespace_name, bytes/1024/1024 as mbytes FROM dba_data_files WHERE tablespace_name = :tablespace_name;",
+    "SHARED_POOL_FREE_CHECK": "SELECT pool, name, bytes/1024/1024 as mbytes FROM v$sgastat WHERE pool = 'shared pool' AND name = 'free memory';",
+    "FLUSH_SHARED_POOL": "ALTER SYSTEM FLUSH SHARED_POOL;",
+    "EXTEND_TABLESPACE": "ALTER TABLESPACE {tablespace_name} ADD DATAFILE SIZE 100M AUTOEXTEND ON NEXT 50M;",
+    "EXTEND_UNDO_RETENTION": "ALTER SYSTEM SET UNDO_RETENTION = 10800 SCOPE=BOTH;"
 }
 
 def get_sql_query(query_id: str, **kwargs) -> str:
@@ -284,6 +291,51 @@ class LockDiagnosticsEngine:
             )
 
             return [root_blocker.to_dict(), blocked_worker_1.to_dict(), blocked_worker_2.to_dict()]
+
+        elif self.simulated_scenario == "ora_00060_deadlock":
+            # Scenario: Cross-worker circular lock wait on staging tables
+            root_mode_text, root_impact = LOCK_MODE_MAPPING[6]
+            blocked_mode_text, blocked_impact = LOCK_MODE_MAPPING[0]
+
+            deadlock_blocker = LockTelemetryItem(
+                lock_depth=1,
+                is_blocked_leaf=0,
+                sid=142,
+                serial_number=31289,
+                oracle_username="APPS",
+                os_user_name="applmgr",
+                os_process_id="31289",
+                module="MSCPDCW",
+                action="ODS_LOAD_BOM",
+                blocking_session=None,
+                object_id=89230,
+                object_name="MSC_ST_BOM",
+                locked_mode=6,
+                locked_mode_text=root_mode_text,
+                operational_impact=root_impact,
+                current_sql_text="UPDATE MSC_ST_BOM SET PROCESS_STATUS = 2 WHERE INVENTORY_ITEM_ID = :1"
+            )
+
+            deadlock_victim = LockTelemetryItem(
+                lock_depth=2,
+                is_blocked_leaf=1,
+                sid=528,
+                serial_number=19204,
+                oracle_username="APPS",
+                os_user_name="applmgr",
+                os_process_id="31902",
+                module="MSCPDCW",
+                action="ODS_LOAD_ROUTINGS",
+                blocking_session=142,
+                object_id=89231,
+                object_name="MSC_ST_ROUTINGS",
+                locked_mode=0,
+                locked_mode_text=blocked_mode_text,
+                operational_impact=blocked_impact,
+                current_sql_text="UPDATE MSC_ST_ROUTINGS SET PROCESS_STATUS = 2 WHERE ROUTING_SEQUENCE_ID = :1"
+            )
+
+            return [deadlock_blocker.to_dict(), deadlock_victim.to_dict()]
 
         elif self.simulated_scenario == "no_locks":
             return []

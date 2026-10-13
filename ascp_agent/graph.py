@@ -412,10 +412,12 @@ def log_ingestion_node(state: AgentState):
         parsed = parser.parse_line(line)
         if parsed.get("template"):
             extracted_templates.append(parsed["template"])
-        # Anomaly and stack filtering
-        for code in ["ORA-00054", "ORA-14098", "ORA-02478", "ORA-00001", "ORA-12571"]:
+        # Anomaly and stack filtering across entire EBS catalog
+        for code in ["ORA-00054", "ORA-14098", "ORA-02478", "ORA-00001", "ORA-12571", "ORA-00060", "ORA-01555", "ORA-01653", "ORA-04031"]:
             if code in line and code not in detected_errors:
                 detected_errors.append(code)
+        if ("ST_STATUS" in line and ("not zero" in line or "= 2" in line or "current ST_STATUS = 2" in line or "stalled" in line or "crashed" in line)) and "STUCK_ST_STATUS" not in detected_errors:
+            detected_errors.append("STUCK_ST_STATUS")
         objs = parsed.get("parameters", {}).get("TARGET_OBJECTS", [])
         if objs:
             target_table = objs[0]
@@ -438,37 +440,132 @@ def classification_node(state: AgentState) -> dict:
     detected = state.get("context", {}).get("detected_errors", [])
     templates_str = " ".join(state.get("log_templates", []))
 
-    if "ORA-00054" in detected or "resource busy" in templates_str or "LOCK TABLE" in templates_str:
+    # Priority 1: Exact detected error signatures
+    if "ORA-04031" in detected:
+        domain = "SHARED_POOL_MEMORY"
+        primary_mode = "ORA-04031"
+        next_action = "FLUSH_SHARED_POOL"
+        phase = "LOAD"
+    elif "ORA-00054" in detected:
         domain = "DATABASE_LOCK"
+        primary_mode = "ORA-00054"
         next_action = "INSPECT_LOCKS"
         phase = "LOAD"
-    elif "ORA-00001" in detected or "surrogate" in templates_str or "unique constraint" in templates_str:
+    elif "ORA-00060" in detected:
+        domain = "DEADLOCK_CONCURRENCY"
+        primary_mode = "ORA-00060"
+        next_action = "INSPECT_LOCKS"
+        phase = "LOAD"
+    elif "ORA-00001" in detected:
         domain = "STAGING_VALIDATION"
+        primary_mode = "ORA-00001"
         next_action = "PURGE_STAGING"
         phase = "LOAD"
     elif "ORA-14098" in detected:
         domain = "PARTITION_EXCHANGE"
+        primary_mode = "ORA-14098"
         next_action = "ALIGN_INDEXES"
         phase = "LOAD"
+    elif "ORA-01555" in detected:
+        domain = "UNDO_RETENTION"
+        primary_mode = "ORA-01555"
+        next_action = "EXTEND_UNDO_RETENTION"
+        phase = "PULL"
+    elif "ORA-01653" in detected:
+        domain = "STORAGE_CAPACITY"
+        primary_mode = "ORA-01653"
+        next_action = "EXTEND_TABLESPACE"
+        phase = "PULL"
+    elif "ORA-02478" in detected:
+        domain = "INFRASTRUCTURE_PIPE"
+        primary_mode = "ORA-02478"
+        next_action = "PURGE_PIPE"
+        phase = "PULL"
     elif "ORA-12571" in detected:
         domain = "NETWORK_SNAPSHOT"
-        next_action = "RERUN_SNAPSHOT"
+        primary_mode = "ORA-12571"
+        next_action = "REFRESH_SNAPSHOT"
         phase = "PULL"
-    else:
+    elif "STUCK_ST_STATUS" in detected:
+        domain = "ORCHESTRATION_REGISTRY"
+        primary_mode = "STUCK_ST_STATUS"
+        next_action = "RESET_REGISTRY"
+        phase = "PULL"
+    # Priority 2: Semantic template keywords if ORA prefix was suppressed
+    elif "resource busy" in templates_str or "LOCK TABLE" in templates_str:
         domain = "DATABASE_LOCK"
+        primary_mode = "ORA-00054"
         next_action = "INSPECT_LOCKS"
         phase = "LOAD"
+    elif "deadlock detected" in templates_str:
+        domain = "DEADLOCK_CONCURRENCY"
+        primary_mode = "ORA-00060"
+        next_action = "INSPECT_LOCKS"
+        phase = "LOAD"
+    elif "unique constraint" in templates_str:
+        domain = "STAGING_VALIDATION"
+        primary_mode = "ORA-00001"
+        next_action = "PURGE_STAGING"
+        phase = "LOAD"
+    elif "index mismatch" in templates_str:
+        domain = "PARTITION_EXCHANGE"
+        primary_mode = "ORA-14098"
+        next_action = "ALIGN_INDEXES"
+        phase = "LOAD"
+    elif "snapshot too old" in templates_str:
+        domain = "UNDO_RETENTION"
+        primary_mode = "ORA-01555"
+        next_action = "EXTEND_UNDO_RETENTION"
+        phase = "PULL"
+    elif "unable to extend table" in templates_str:
+        domain = "STORAGE_CAPACITY"
+        primary_mode = "ORA-01653"
+        next_action = "EXTEND_TABLESPACE"
+        phase = "PULL"
+    elif "shared memory" in templates_str:
+        domain = "SHARED_POOL_MEMORY"
+        primary_mode = "ORA-04031"
+        next_action = "FLUSH_SHARED_POOL"
+        phase = "LOAD"
+    elif "DBMS_PIPE" in templates_str or "maxextents reached" in templates_str:
+        domain = "INFRASTRUCTURE_PIPE"
+        primary_mode = "ORA-02478"
+        next_action = "PURGE_PIPE"
+        phase = "PULL"
+    elif "packet writer failure" in templates_str:
+        domain = "NETWORK_SNAPSHOT"
+        primary_mode = "ORA-12571"
+        next_action = "REFRESH_SNAPSHOT"
+        phase = "PULL"
+    elif "ST_STATUS is not zero" in templates_str or "current ST_STATUS = 2" in templates_str:
+        domain = "ORCHESTRATION_REGISTRY"
+        primary_mode = "STUCK_ST_STATUS"
+        next_action = "RESET_REGISTRY"
+        phase = "PULL"
+    else:
+        domain = "HEALTHY"
+        primary_mode = "UNKNOWN"
+        next_action = "INSPECT_LOCKS"
+        phase = "NORMAL"
 
     return {
         "failure_domain": domain,
+        "failure_mode": primary_mode,
         "remediation_action": next_action,
-        "context": {"failed_phase": phase, "remediation_action": next_action},
-        "messages": [AIMessage(content=f"Classification: Failure domain mapped to '{domain}'. Routing to diagnostic path: {next_action}.")]
+        "context": {"failed_phase": phase, "remediation_action": next_action, "failure_mode": primary_mode},
+        "messages": [AIMessage(content=f"Classification: Failure domain mapped to '{domain}' ({primary_mode}). Routing to diagnostic path: {next_action}.")]
     }
 
 def oracle_lock_node(state: AgentState) -> dict:
     """Step 3: Real-Time Hierarchical Oracle Lock Analysis via python-oracledb & V$ views."""
-    scenario = "ora_00054_mode6" if state.get("failure_domain") == "DATABASE_LOCK" else "no_locks"
+    domain = state.get("failure_domain")
+    if domain == "DEADLOCK_CONCURRENCY":
+        scenario = "ora_00060_deadlock"
+    elif domain == "DATABASE_LOCK":
+        scenario = "ora_00054_mode6"
+    else:
+        scenario = "no_locks"
+
     engine = LockDiagnosticsEngine(simulated_scenario=scenario)
     telemetry = engine.execute_hierarchical_lock_query()
     root_blocker = engine.isolate_root_blocker(telemetry)
@@ -485,10 +582,11 @@ def oracle_lock_node(state: AgentState) -> dict:
         mode = root_blocker.get("locked_mode_text")
         sql = root_blocker.get("current_sql_text")
         msg = f"Hierarchical lock tree isolated root blocker: SID {sid} (SERIAL# {serial}) holding Mode 6 {mode} on {obj}. Holding SQL: {sql}."
+        rem_act = "KILL_SESSION"
     else:
         msg = "Hierarchical lock query executed across V$SESSION / V$LOCKED_OBJECT: No active Mode 6 lock contention detected."
+        rem_act = "INSPECT_LOCKS"
 
-    rem_act = "KILL_SESSION" if root_found else state.get("remediation_action", "INSPECT_LOCKS")
     ctx_update["remediation_action"] = rem_act
 
     return {
@@ -504,32 +602,66 @@ def rca_hypothesis_node(state: AgentState) -> dict:
     domain = state.get("failure_domain")
     root_found = state.get("root_blocker_found")
     detected = state.get("context", {}).get("detected_errors", [])
-    
+    templates_str = " ".join(state.get("log_templates", []))
+    mode = state.get("failure_mode") or "UNKNOWN"
+
     # Calculate deterministic domain confidence score (0 to 100%)
-    if domain == "DATABASE_LOCK" and root_found and "ORA-00054" in detected:
+    if domain == "DATABASE_LOCK" and root_found and ("ORA-00054" in detected or "resource busy" in templates_str):
         confidence = 96.5
         risk = "HIGH"  # KILL SESSION required
         thesis = "Definitive Root Cause: Uncommitted session holds Exclusive TM Mode 6 lock on staging table, halting MSCPDCW workers."
-    elif domain == "STAGING_VALIDATION" and "ORA-00001" in detected:
+    elif domain == "STAGING_VALIDATION" and ("ORA-00001" in detected or "unique constraint" in templates_str):
         confidence = 92.0
         risk = "MEDIUM"
         thesis = "Definitive Root Cause: Legacy unpurged interface records causing duplicate surrogate key collisions during Stage 2 ODS Load."
-    elif domain == "PARTITION_EXCHANGE" and "ORA-14098" in detected:
+    elif domain == "PARTITION_EXCHANGE" and ("ORA-14098" in detected or "index mismatch" in templates_str):
         confidence = 94.0
         risk = "MEDIUM"
         thesis = "Definitive Root Cause: Staging partition index definitions diverge from target partitioned ODS table."
+    elif domain == "DEADLOCK_CONCURRENCY" and ("ORA-00060" in detected or "deadlock detected" in templates_str):
+        confidence = 95.0
+        risk = "HIGH"
+        thesis = "Definitive Root Cause: Cross-worker circular lock wait on staging tables. Root blocker session isolated."
+    elif domain == "UNDO_RETENTION" and ("ORA-01555" in detected or "snapshot too old" in templates_str):
+        confidence = 94.5
+        risk = "LOW"
+        thesis = "Definitive Root Cause: Extraction query exceeded UNDO_RETENTION on source ERP instance during snapshot pull."
+    elif domain == "STORAGE_CAPACITY" and ("ORA-01653" in detected or "unable to extend table" in templates_str):
+        confidence = 95.0
+        risk = "MEDIUM"
+        thesis = "Definitive Root Cause: Staging tablespace storage quota exhausted during bulk extraction pull."
+    elif domain == "SHARED_POOL_MEMORY" and ("ORA-04031" in detected or "shared memory" in templates_str):
+        confidence = 93.0
+        risk = "MEDIUM"
+        thesis = "Definitive Root Cause: SGA shared pool memory fragmentation preventing contiguous package compilation."
+    elif domain == "ORCHESTRATION_REGISTRY" or "STUCK_ST_STATUS" in detected or "ST_STATUS is not zero" in templates_str:
+        confidence = 96.0
+        risk = "HIGH"
+        thesis = "Definitive Root Cause: MSC_APPS_INSTANCES.ST_STATUS flag locked in active state after crash with 0 running workers."
+    elif domain == "INFRASTRUCTURE_PIPE" or "ORA-02478" in detected:
+        confidence = 91.0
+        risk = "MEDIUM"
+        thesis = "Definitive Root Cause: Staging tablespace extent limit reached and child pull worker crashed without pipe signal."
+    elif domain == "NETWORK_SNAPSHOT" or "ORA-12571" in detected:
+        confidence = 92.0
+        risk = "MEDIUM"
+        thesis = "Definitive Root Cause: DB Link network drop during snapshot extraction."
     elif domain == "DATABASE_LOCK" and not root_found:
         confidence = 72.0
         risk = "LOW"
         thesis = "Intermittent Lock: No persistent root blocker detected in dynamic views. Pipeline may have stalled on pipe buffer."
     else:
-        confidence = 88.0
+        confidence = 90.0
         risk = "LOW"
-        thesis = "Operational Exception: Resolved via standard diagnostic recovery."
+        thesis = "Healthy or Non-Destructive Execution: No destructive remediation permitted."
+
+    norm_conf = confidence / 100.0 if confidence > 1.0 else confidence
 
     return {
+        "confidence": norm_conf,
         "confidence_score": confidence,
         "risk_level": risk,
+        "failure_mode": mode,
         "messages": [AIMessage(content=f"RCA Synthesis: {thesis} | Diagnostic Confidence: {confidence:.1f}% | Risk Tier: {risk}.")]
     }
 
@@ -539,6 +671,10 @@ ACTION_EXECUTORS: Dict[str, Callable[[RemediationEngine, AgentState, bool], Any]
         serial=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("serial_number") or st.get("context", {}).get("target_serial", 28419),
         object_name=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("object_name", st.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")),
         inst_id=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("inst_id"),
+        username=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("oracle_username", "APPS"),
+        module=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("module", "MSCPDCW"),
+        session_type=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("session_type", "USER"),
+        instance_id=st.get("context", {}).get("instance_id", 1001),
         dry_run=dry
     ),
     "PURGE_STAGING_NO_VALIDATION": lambda eng, st, dry: eng.execute_purge_staging_no_validation(
@@ -569,6 +705,23 @@ ACTION_EXECUTORS: Dict[str, Callable[[RemediationEngine, AgentState, bool], Any]
     "RERUN_SNAPSHOT_FAST": lambda eng, st, dry: eng.execute_snapshot_refresh(
         mview_name=st.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES"),
         mode="F",
+        dry_run=dry
+    ),
+    "EXTEND_UNDO_RETENTION": lambda eng, st, dry: eng.execute_extend_undo_retention(
+        dry_run=dry
+    ),
+    "EXTEND_TABLESPACE": lambda eng, st, dry: eng.execute_extend_tablespace(
+        tablespace_name="APPS_TS_STAGING",
+        dry_run=dry
+    ),
+    "FLUSH_SHARED_POOL": lambda eng, st, dry: eng.execute_flush_shared_pool(
+        dry_run=dry
+    ),
+    "RESET_REGISTRY": lambda eng, st, dry: eng.execute_reset_registry(
+        instance_id=st.get("context", {}).get("instance_id", 1001),
+        dry_run=dry
+    ),
+    "INSPECT_LOCKS": lambda eng, st, dry: eng.execute_inspect_locks(
         dry_run=dry
     ),
 }
@@ -729,7 +882,7 @@ def servicenow_node(state: AgentState) -> dict:
 def route_from_classification(state: AgentState) -> str:
     """Routes based on classified failure domain."""
     domain = state.get("failure_domain")
-    if domain == "DATABASE_LOCK":
+    if domain in ("DATABASE_LOCK", "DEADLOCK_CONCURRENCY"):
         return "oracle_lock_node"
     return "rca_hypothesis_node"
 

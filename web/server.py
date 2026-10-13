@@ -29,12 +29,14 @@ from ascp_agent.pipeline_monitor import PipelineMonitor
 from ascp_agent.graph import create_ascp_diagnostic_graph
 from ascp_agent.state import Command
 from ascp_agent.simulator import SCENARIOS
+from ascp_agent.metrics import GLOBAL_METRICS
+from ascp_agent.secrets import GLOBAL_SECRET_MANAGER
 
 # Canonical single source of truth for dashboard static assets
 PUBLIC_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = PUBLIC_DIR
 
-# JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
+# Initial JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
 OPERATOR_TOKENS: Dict[str, str] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
 
 # Concurrency & request safety limits
@@ -124,7 +126,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         if not supplied:
             return None
         supplied_bytes = supplied.encode("utf-8")
-        for token, val in OPERATOR_TOKENS.items():
+        active_tokens = GLOBAL_SECRET_MANAGER.get_operator_tokens() or OPERATOR_TOKENS
+        for token, val in active_tokens.items():
             if hmac.compare_digest(supplied_bytes, token.encode("utf-8")):
                 if isinstance(val, dict):
                     user = val.get("user", "operator")
@@ -230,6 +233,18 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             with _AUDIT_LOG_LOCK:
                 events = list(_AUDIT_EVENTS)
             self._send_json({"count": len(events), "audit_trail": events})
+
+        elif path == "/api/metrics":
+            qs = urllib.parse.parse_qs(parsed.query)
+            if qs.get("format", [""])[0] == "prometheus" or "text/plain" in self.headers.get("Accept", ""):
+                prom_data = GLOBAL_METRICS.to_prometheus_format().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                self.send_header("Content-Length", str(len(prom_data)))
+                self.end_headers()
+                self.wfile.write(prom_data)
+            else:
+                self._send_json(GLOBAL_METRICS.get_summary())
 
         else:
             file_path = resolve_static_path(path)
@@ -440,6 +455,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         "is_remediated": state.get("is_remediated"),
                         "remediation_result": state.get("remediation_result")
                     })
+                    approval_created = pending.get("created_at") or session_info.get("created_at", time.time())
+                    lat_secs = max(0.0, time.time() - approval_created)
+                    GLOBAL_METRICS.record_approval_decision(approved, latency_seconds=lat_secs)
+                    if state.get("is_remediated"):
+                        tot_mttr = max(0.0, time.time() - session_info.get("created_at", time.time()))
+                        GLOBAL_METRICS.record_resolution(mttr_seconds=tot_mttr, was_successful=True)
                 else:
                     raw_logs = SCENARIOS[scen_key]["logs"]
                     with _INVOKE_LOCK:
@@ -447,13 +468,18 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                             initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": raw_logs},
                             config={"configurable": {"thread_id": thread_id}}
                         )
+                    diag_duration = max(0.0, time.time() - session_info.get("created_at", time.time()))
+                    GLOBAL_METRICS.record_diagnosis(duration_seconds=diag_duration)
             except Exception as exc:
                 logging.exception("Diagnostic Agent execution error: %s", exc)
                 self._send_json({"error": "Diagnostic Agent execution failed. Check server logs."}, 500)
                 return
 
             if state.get("interrupted") and state.get("interrupt_payload"):
-                session_info["pending_approval"] = state.get("interrupt_payload")
+                payload = dict(state.get("interrupt_payload"))
+                payload.setdefault("created_at", time.time())
+                session_info["pending_approval"] = payload
+                GLOBAL_METRICS.record_approval_request()
 
             # Convert AIMessage/HumanMessage objects to serializable dicts
             serialized_msgs = []
@@ -483,7 +509,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def run_server(port: int = 8085):
-    if not OPERATOR_TOKENS:
+    active_tokens = GLOBAL_SECRET_MANAGER.get_operator_tokens() or OPERATOR_TOKENS
+    if not active_tokens:
         raise SystemExit('ASCP_OPERATOR_TOKENS is not set. Example: {"<long-random-token>": "alice"}')
     with ThreadedASCPDiagnosticServer(("127.0.0.1", port), ASCPDiagnosticHandler) as httpd:
         print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://127.0.0.1:{port}")

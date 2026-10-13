@@ -87,6 +87,77 @@ SCENARIOS: Dict[str, Dict[str, Any]] = {
             "[12-OCT-2025 01:30:00]: Purge Staging Tables (MSCPDCP) completed successfully. ST_STATUS reset to 0."
         ],
         "lock_scenario": "no_locks"
+    },
+    "ora_00060_deadlock": {
+        "name": "Scenario 7: Worker Cross-Table Deadlock (ORA-00060)",
+        "description": "Mutual circular lock wait between concurrent MSCPDCW workers on MSC_ST_BOM and MSC_ST_ROUTINGS.",
+        "stage": "Stage 2: Planning ODS Load (MSCPDC)",
+        "instance_id": 1001,
+        "st_status": -1,
+        "logs": [
+            "[12-OCT-2025 07:10:02]: MSCPDCW Worker 2 updating MSC_ST_BOM.",
+            "[12-OCT-2025 07:10:04]: MSCPDCW Worker 3 updating MSC_ST_ROUTINGS.",
+            "[12-OCT-2025 07:10:15]: ORA-00060: deadlock detected while waiting for resource.",
+            "[12-OCT-2025 07:10:16]: See alert log trace file /u01/oracle/diag/trace/prd1_ora_4192.trc for deadlock graph.",
+            "[12-OCT-2025 07:10:20]: Worker process 3192 terminated by kernel deadlock resolution."
+        ],
+        "lock_scenario": "no_locks"
+    },
+    "ora_01555_snapshot_old": {
+        "name": "Scenario 8: Long-Running Extraction Snapshot Too Old (ORA-01555)",
+        "description": "Source ERP undo tablespace retention exceeded during high-velocity snapshot log pull.",
+        "stage": "Stage 1: Planning Data Pull (MSCPDP)",
+        "instance_id": 1001,
+        "st_status": -1,
+        "logs": [
+            "[12-OCT-2025 03:15:00]: MSRFWOR extracting transactional deltas from MLOG$_OE_ORDER_LINES_ALL.",
+            "[12-OCT-2025 03:45:22]: ORA-01555: snapshot too old: rollback segment number 14 with name '_SYSSMU14_4129$' too small.",
+            "[12-OCT-2025 03:45:25]: Query duration 1822 sec exceeded UNDO_RETENTION (900 sec).",
+            "[12-OCT-2025 03:45:30]: Extraction worker aborted with read consistency error."
+        ],
+        "lock_scenario": "no_locks"
+    },
+    "ora_01653_tablespace_full": {
+        "name": "Scenario 9: Staging Tablespace Extent Allocation Failure (ORA-01653)",
+        "description": "Staging tablespace datafile quota exhausted during heavy batch extraction.",
+        "stage": "Stage 1: Planning Data Pull (MSCPDP)",
+        "instance_id": 1001,
+        "st_status": -1,
+        "logs": [
+            "[12-OCT-2025 02:10:00]: MSCPDP inserting 2,400,000 supply records into MSC_ST_SUPPLIES.",
+            "[12-OCT-2025 02:18:41]: ORA-01653: unable to extend table MSC.MSC_ST_SUPPLIES by 8192 in tablespace APPS_TS_STAGING.",
+            "[12-OCT-2025 02:18:45]: Datafile /u02/oradata/prd1/apps_ts_staging01.dbf reached maxbytes without autoextend.",
+            "[12-OCT-2025 02:18:50]: Bulk insert aborted due to insufficient disk quota."
+        ],
+        "lock_scenario": "no_locks"
+    },
+    "ora_04031_shared_pool": {
+        "name": "Scenario 10: SGA Shared Pool Memory Fragmentation (ORA-04031)",
+        "description": "SGA shared pool library cache unable to allocate contiguous chunk for package compilation.",
+        "stage": "Stage 2: Planning ODS Load (MSCPDC)",
+        "instance_id": 1001,
+        "st_status": -1,
+        "logs": [
+            "[12-OCT-2025 05:22:10]: Compiling dynamic surrogate mapping package MSC_CL_COLLECTION.LOAD_SUPPLIES.",
+            "[12-OCT-2025 05:22:14]: ORA-04031: unable to allocate 4128 bytes of shared memory ('shared pool','unknown object','sga heap(1,0)','kglsim heap').",
+            "[12-OCT-2025 05:22:18]: High library cache fragmentation detected in SGA.",
+            "[12-OCT-2025 05:22:20]: Worker aborted: PL/SQL package compilation failed."
+        ],
+        "lock_scenario": "no_locks"
+    },
+    "stuck_st_status_registry": {
+        "name": "Scenario 11: Staging Status Registry Stuck Post-Crash (ST_STATUS)",
+        "description": "Abnormal termination left MSC_APPS_INSTANCES.ST_STATUS set to 2 (LOAD_PROCESSING) with no active requests.",
+        "stage": "Stage 1: Planning Data Pull (MSCPDP)",
+        "instance_id": 1001,
+        "st_status": 2,
+        "logs": [
+            "[12-OCT-2025 08:00:01]: Initiating Planning Data Pull parent request 890499.",
+            "[12-OCT-2025 08:00:03]: ST_STATUS is not zero (current ST_STATUS = 2: LOAD_PROCESSING).",
+            "[12-OCT-2025 08:00:04]: Cause: Another collections process is already running or prior run crashed without registry reset.",
+            "[12-OCT-2025 08:00:10]: Concurrent request completed with error status."
+        ],
+        "lock_scenario": "no_locks"
     }
 }
 

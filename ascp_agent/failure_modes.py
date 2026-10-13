@@ -86,6 +86,71 @@ FAILURE_CATALOG: Dict[str, FailureModeDef] = {
         mos_doc_id="Doc ID 203893.1 / 1060933.1",
         detailed_explanation="In centralized topologies, large snapshot delta writes over latent database links can encounter network drops, aborting MSRFWOR.",
         diagnostic_query_id="HIERARCHICAL_LOCK_TREE"
+    ),
+    "ORA-00060": FailureModeDef(
+        code="ORA-00060",
+        error_pattern="deadlock detected while waiting for resource",
+        domain="Deadlock / Concurrency",
+        target_objects=["MSC_ST_%", "V$SESSION", "ALERT.LOG"],
+        root_cause_mechanism="Mutual circular wait deadlock between concurrent planning workers updating interrelated staging tables.",
+        recommended_action="INSPECT_LOCKS",
+        risk_tier="MEDIUM",
+        remediation_procedure=get_sql_query("DEADLOCK_TRACE_CHECK"),
+        mos_doc_id="Doc ID 60.1 / 1308892.1",
+        detailed_explanation="Circular dependency between two workers. Kernel broke deadlock by terminating one statement with ORA-00060. Requires analyzing deadlock graph and requeuing worker.",
+        diagnostic_query_id="DEADLOCK_TRACE_CHECK"
+    ),
+    "ORA-01555": FailureModeDef(
+        code="ORA-01555",
+        error_pattern="snapshot too old",
+        domain="Undo / Snapshot Retention",
+        target_objects=["V$UNDOSTAT", "MLOG$_%", "UNDO_RETENTION"],
+        root_cause_mechanism="Query duration exceeded UNDO_RETENTION on source ERP instance during MSRFWOR snapshot extraction.",
+        recommended_action="EXTEND_UNDO_RETENTION",
+        risk_tier="LOW",
+        remediation_procedure=get_sql_query("EXTEND_UNDO_RETENTION"),
+        mos_doc_id="Doc ID 10630.1 / 1555.1",
+        detailed_explanation="High uncommitted DML velocity overwritten required undo blocks for read consistency. Recommend increasing UNDO_RETENTION parameter.",
+        diagnostic_query_id="UNDO_RETENTION_CHECK"
+    ),
+    "ORA-01653": FailureModeDef(
+        code="ORA-01653",
+        error_pattern="unable to extend table.*in tablespace",
+        domain="Storage / Capacity",
+        target_objects=["MSC_ST_%", "DBA_TABLESPACES", "DBA_DATA_FILES"],
+        root_cause_mechanism="Staging tablespace datafile reached maximum size or ran out of free filesystem space during high-volume planning data pull.",
+        recommended_action="EXTEND_TABLESPACE",
+        risk_tier="MEDIUM",
+        remediation_procedure=get_sql_query("EXTEND_TABLESPACE"),
+        mos_doc_id="Doc ID 1653.1 / 281881.1",
+        detailed_explanation="Dedicated tablespace hosting MSC_ST_* cannot allocate next extent. Autoextend was disabled or physical disk mount is full.",
+        diagnostic_query_id="TABLESPACE_QUOTA_CHECK"
+    ),
+    "ORA-04031": FailureModeDef(
+        code="ORA-04031",
+        error_pattern="unable to allocate.*bytes of shared memory",
+        domain="Memory / Shared Pool",
+        target_objects=["V$SGASTAT", "V$SQLAREA", "SHARED_POOL_SIZE"],
+        root_cause_mechanism="SGA shared pool memory fragmentation preventing contiguous allocation during PL/SQL compilation of MSC collection packages.",
+        recommended_action="FLUSH_SHARED_POOL",
+        risk_tier="MEDIUM",
+        remediation_procedure=get_sql_query("FLUSH_SHARED_POOL"),
+        mos_doc_id="Doc ID 146528.1 / 4031.1",
+        detailed_explanation="Severe heap fragmentation in shared pool library cache. Requires flushing shared pool or pinning large packages with DBMS_SHARED_POOL.KEEP.",
+        diagnostic_query_id="SHARED_POOL_FREE_CHECK"
+    ),
+    "STUCK_ST_STATUS": FailureModeDef(
+        code="STUCK_ST_STATUS",
+        error_pattern="ST_STATUS is not zero|ST_STATUS = [123]|collection already running|staging status remains",
+        domain="Orchestration / Registry",
+        target_objects=["MSC_APPS_INSTANCES", "FND_CONCURRENT_REQUESTS"],
+        root_cause_mechanism="Aborted collection left MSC_APPS_INSTANCES.ST_STATUS flagged as active (1, 2, or 3) with zero running worker requests.",
+        recommended_action="RESET_REGISTRY",
+        risk_tier="HIGH",
+        remediation_procedure=get_sql_query("RESET_REGISTRY"),
+        mos_doc_id="Doc ID 206497.1 / 274853.1",
+        detailed_explanation="Staging registry flag ST_STATUS is locked in a non-zero processing state following an unhandled crash, blocking subsequent collection attempts.",
+        diagnostic_query_id="ST_STATUS_REGISTRY_CHECK"
     )
 }
 

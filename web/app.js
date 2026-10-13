@@ -424,10 +424,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         <!-- Subtitle Details -->
         <text x="20" y="44" fill="#cbd5e1" font-family="'Inter', sans-serif" font-size="11">
-          Target: <tspan fill="#f87171" font-weight="600" font-family="'JetBrains Mono', monospace">${rootItem.object_name}</tspan> | User: ${rootItem.oracle_username}
+          Target: <tspan fill="#f87171" font-weight="600" font-family="'JetBrains Mono', monospace">${escapeHtml(rootItem.object_name)}</tspan> | User: ${escapeHtml(rootItem.oracle_username)}
         </text>
         <text x="20" y="60" fill="#94a3b8" font-family="'Inter', sans-serif" font-size="10">
-          Module: <tspan fill="#e2e8f0">${rootItem.module || 'SQL*Plus'}</tspan> (${rootItem.action || 'MANUAL'}) &bull; Click to Inspect
+          Module: <tspan fill="#e2e8f0">${escapeHtml(rootItem.module || 'SQL*Plus')}</tspan> (${escapeHtml(rootItem.action || 'MANUAL')}) &bull; Click to Inspect
         </text>
       </g>
     `;
@@ -456,10 +456,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
           <!-- Worker Details -->
           <text x="18" y="42" fill="#cbd5e1" font-family="'Inter', sans-serif" font-size="10.5">
-            Process: <tspan fill="#fde68a" font-family="'JetBrains Mono', monospace">${w.module}</tspan>
+            Process: <tspan fill="#fde68a" font-family="'JetBrains Mono', monospace">${escapeHtml(w.module)}</tspan>
           </text>
           <text x="18" y="56" fill="#94a3b8" font-family="'Inter', sans-serif" font-size="9.5">
-            ${w.action || 'ODS_LOAD_WORKER'} &bull; Click to Inspect
+            ${escapeHtml(w.action || 'ODS_LOAD_WORKER')} &bull; Click to Inspect
           </text>
         </g>
       `;
@@ -492,61 +492,84 @@ document.addEventListener('DOMContentLoaded', () => {
     const isHighRisk = usedUrec > 100000;
     const estRollback = (usedUrec * 0.0003).toFixed(1);
 
-    inspectorBody.innerHTML = `
-      <div class="inspector-row">
-        <span class="inspector-label">Session ID / Serial:</span>
-        <span class="inspector-val">SID ${item.sid}, SERIAL# ${item.serial_number}</span>
-      </div>
-      <div class="inspector-row">
-        <span class="inspector-label">Oracle User / OS:</span>
-        <span class="inspector-val">${item.oracle_username} (${item.os_user_name || 'applmgr'})</span>
-      </div>
-      <div class="inspector-row">
-        <span class="inspector-label">Target Table:</span>
-        <span class="inspector-val" style="color:#f87171;">${item.object_name}</span>
-      </div>
-      <div class="inspector-row">
-        <span class="inspector-label">Lock Mode:</span>
-        <span class="inspector-val" style="color:${isRoot ? '#ef4444' : '#f59e0b'};">
-          Mode ${item.locked_mode}: ${item.locked_mode_text}
-        </span>
-      </div>
-      <div class="inspector-row">
-        <span class="inspector-label">Client Module:</span>
-        <span class="inspector-val">${item.module || 'SQL*Plus'}</span>
-      </div>
-      <div class="inspector-row">
-        <span class="inspector-label">Active Action:</span>
-        <span class="inspector-val">${item.action || 'NONE'}</span>
-      </div>
-      
-      <div style="margin-top:0.25rem;">
-        <span class="inspector-label" style="display:block; margin-bottom:0.25rem;">V$TRANSACTION Undo Records (USED_UREC):</span>
-        <div class="inspector-undo-badge ${isHighRisk ? 'danger' : ''}">
-          <span>${usedUrec.toLocaleString()} Undo Records</span>
-          <span>&bull; Est Rollback: ${estRollback}s</span>
-          <span>&bull; ${isHighRisk ? 'HIGH PMON RISK' : 'SAFE FOR TERMINATION'}</span>
-        </div>
-      </div>
+    // Build inspector details using safe textContent to prevent XSS
+    inspectorBody.textContent = '';
 
-      <div style="margin-top:0.25rem;">
-        <span class="inspector-label" style="display:block; margin-bottom:0.25rem;">Current Executing SQL (V$SQL):</span>
-        <div class="inspector-sql">${escapeHtml(item.current_sql_text || 'SELECT /* Idle uncommitted transaction */ FROM DUAL')}</div>
-      </div>
+    const addInspectorRow = (label, val, valStyle = '') => {
+      const row = document.createElement('div');
+      row.className = 'inspector-row';
+      const lSpan = document.createElement('span');
+      lSpan.className = 'inspector-label';
+      lSpan.textContent = label;
+      const vSpan = document.createElement('span');
+      vSpan.className = 'inspector-val';
+      vSpan.textContent = String(val);
+      if (valStyle) vSpan.style.cssText = valStyle;
+      row.appendChild(lSpan);
+      row.appendChild(vSpan);
+      inspectorBody.appendChild(row);
+    };
 
-      ${isRoot ? `
-        <div style="margin-top:0.5rem; display:flex; gap:0.5rem;">
-          <button class="btn-xs btn-danger" id="btnDraftKillSession" style="flex:1; padding:0.4rem; background:rgba(239,68,68,0.2); border:1px solid #ef4444; color:#fca5a5; border-radius:4px; font-weight:600; cursor:pointer;">
-            Stage Kill Remediation (HITL)
-          </button>
-        </div>
-      ` : ''}
-    `;
+    addInspectorRow('Session ID / Serial:', `SID ${item.sid}, SERIAL# ${item.serial_number}`);
+    addInspectorRow('Oracle User / OS:', `${item.oracle_username} (${item.os_user_name || 'applmgr'})`);
+    addInspectorRow('Target Table:', item.object_name, 'color:#f87171;');
+    addInspectorRow('Lock Mode:', `Mode ${item.locked_mode}: ${item.locked_mode_text}`, `color:${isRoot ? '#ef4444' : '#f59e0b'};`);
+    addInspectorRow('Client Module:', item.module || 'SQL*Plus');
+    addInspectorRow('Active Action:', item.action || 'NONE');
 
-    // Hook up Stage Kill Remediation button if root
-    const btnDraftKillSession = document.getElementById('btnDraftKillSession');
-    if (btnDraftKillSession) {
-      btnDraftKillSession.addEventListener('click', () => {
+    // Undo Records block
+    const undoWrap = document.createElement('div');
+    undoWrap.style.marginTop = '0.25rem';
+    const undoLbl = document.createElement('span');
+    undoLbl.className = 'inspector-label';
+    undoLbl.style.display = 'block';
+    undoLbl.style.marginBottom = '0.25rem';
+    undoLbl.textContent = 'V$TRANSACTION Undo Records (USED_UREC):';
+    undoWrap.appendChild(undoLbl);
+
+    const undoBadge = document.createElement('div');
+    undoBadge.className = `inspector-undo-badge ${isHighRisk ? 'danger' : ''}`;
+    const span1 = document.createElement('span');
+    span1.textContent = `${usedUrec.toLocaleString()} Undo Records`;
+    const span2 = document.createElement('span');
+    span2.textContent = ` • Est Rollback: ${estRollback}s`;
+    const span3 = document.createElement('span');
+    span3.textContent = ` • ${isHighRisk ? 'HIGH PMON RISK' : 'SAFE FOR TERMINATION'}`;
+    undoBadge.appendChild(span1);
+    undoBadge.appendChild(span2);
+    undoBadge.appendChild(span3);
+    undoWrap.appendChild(undoBadge);
+    inspectorBody.appendChild(undoWrap);
+
+    // SQL block
+    const sqlWrap = document.createElement('div');
+    sqlWrap.style.marginTop = '0.25rem';
+    const sqlLbl = document.createElement('span');
+    sqlLbl.className = 'inspector-label';
+    sqlLbl.style.display = 'block';
+    sqlLbl.style.marginBottom = '0.25rem';
+    sqlLbl.textContent = 'Current Executing SQL (V$SQL):';
+    sqlWrap.appendChild(sqlLbl);
+
+    const sqlBox = document.createElement('div');
+    sqlBox.className = 'inspector-sql';
+    sqlBox.textContent = item.current_sql_text || 'SELECT /* Idle uncommitted transaction */ FROM DUAL';
+    sqlWrap.appendChild(sqlBox);
+    inspectorBody.appendChild(sqlWrap);
+
+    // Stage Kill Remediation button if root
+    if (isRoot) {
+      const btnWrap = document.createElement('div');
+      btnWrap.style.marginTop = '0.5rem';
+      btnWrap.style.display = 'flex';
+      btnWrap.style.gap = '0.5rem';
+
+      const btnKill = document.createElement('button');
+      btnKill.className = 'btn-xs btn-danger';
+      btnKill.id = 'btnDraftKillSession';
+      btnKill.style.cssText = 'flex:1; padding:0.4rem; background:rgba(239,68,68,0.2); border:1px solid #ef4444; color:#fca5a5; border-radius:4px; font-weight:600; cursor:pointer;';
+      btnKill.textContent = 'Stage Kill Remediation (HITL)';
+      btnKill.addEventListener('click', () => {
         openHitlModal({
           action: 'KILL_SESSION',
           risk_tier: 'HIGH',
@@ -557,6 +580,8 @@ document.addEventListener('DOMContentLoaded', () => {
           reasoning: `Manual session ${item.sid} is holding Mode 6 Exclusive lock on ${item.object_name}, blocking parallel MSCPDCW workers.`
         });
       });
+      btnWrap.appendChild(btnKill);
+      inspectorBody.appendChild(btnWrap);
     }
 
     nodeInspectorDrawer.classList.remove('hidden');
@@ -564,20 +589,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderCardListLocks(telemetry) {
     if (!lockTreeContainer) return;
-    lockTreeContainer.innerHTML = '';
+    lockTreeContainer.textContent = '';
 
     if (!telemetry || telemetry.length === 0) {
-      lockTreeContainer.innerHTML = `
-        <div class="lock-node-card">
-          <div class="lock-card-header">
-            <span class="session-badge">No Active Blockages</span>
-            <span class="mode-badge waiting">Zero Lock Contention</span>
-          </div>
-          <p style="font-size:0.8rem; color:var(--text-muted);">
-            All MSC_ST_* interface tables and snapshot logs report unconstrained concurrency.
-          </p>
-        </div>
-      `;
+      const emptyCard = document.createElement('div');
+      emptyCard.className = 'lock-node-card';
+      const emptyHeader = document.createElement('div');
+      emptyHeader.className = 'lock-card-header';
+      const b1 = document.createElement('span');
+      b1.className = 'session-badge';
+      b1.textContent = 'No Active Blockages';
+      const b2 = document.createElement('span');
+      b2.className = 'mode-badge waiting';
+      b2.textContent = 'Zero Lock Contention';
+      emptyHeader.appendChild(b1);
+      emptyHeader.appendChild(b2);
+      emptyCard.appendChild(emptyHeader);
+
+      const p = document.createElement('p');
+      p.style.cssText = 'font-size:0.8rem; color:var(--text-muted);';
+      p.textContent = 'All MSC_ST_* interface tables and snapshot logs report unconstrained concurrency.';
+      emptyCard.appendChild(p);
+      lockTreeContainer.appendChild(emptyCard);
       return;
     }
 
@@ -586,23 +619,46 @@ document.addEventListener('DOMContentLoaded', () => {
       const card = document.createElement('div');
       card.className = `lock-node-card ${isRoot ? 'root-blocker' : 'blocked-worker'}`;
 
-      card.innerHTML = `
-        <div class="lock-card-header">
-          <span class="session-badge">SID ${item.sid} (SERIAL# ${item.serial_number})</span>
-          <span class="mode-badge ${isRoot ? '' : 'waiting'}">
-            Mode ${item.locked_mode}: ${item.locked_mode_text}
-          </span>
-        </div>
-        <div class="lock-card-details">
-          <div><span style="color:var(--text-dim)">User:</span> <strong>${item.oracle_username} (${item.os_user_name})</strong></div>
-          <div><span style="color:var(--text-dim)">Object:</span> <code>${item.object_name}</code></div>
-          <div><span style="color:var(--text-dim)">Module:</span> <strong>${item.module}</strong></div>
-          <div><span style="color:var(--text-dim)">Action:</span> <span>${item.action || 'NONE'}</span></div>
-        </div>
-        <div class="lock-sql-box">
-          <code>${escapeHtml(item.current_sql_text || 'SELECT /* Idle or uncommitted transaction */ FROM DUAL')}</code>
-        </div>
-      `;
+      const header = document.createElement('div');
+      header.className = 'lock-card-header';
+      const sBadge = document.createElement('span');
+      sBadge.className = 'session-badge';
+      sBadge.textContent = `SID ${item.sid} (SERIAL# ${item.serial_number})`;
+      const mBadge = document.createElement('span');
+      mBadge.className = `mode-badge ${isRoot ? '' : 'waiting'}`;
+      mBadge.textContent = `Mode ${item.locked_mode}: ${item.locked_mode_text}`;
+      header.appendChild(sBadge);
+      header.appendChild(mBadge);
+      card.appendChild(header);
+
+      const details = document.createElement('div');
+      details.className = 'lock-card-details';
+
+      const createDetailRow = (lbl, val, isCode = false) => {
+        const row = document.createElement('div');
+        const lSpan = document.createElement('span');
+        lSpan.style.color = 'var(--text-dim)';
+        lSpan.textContent = lbl + ': ';
+        const vEl = document.createElement(isCode ? 'code' : 'strong');
+        vEl.textContent = String(val);
+        row.appendChild(lSpan);
+        row.appendChild(vEl);
+        return row;
+      };
+
+      details.appendChild(createDetailRow('User', `${item.oracle_username} (${item.os_user_name || 'applmgr'})`));
+      details.appendChild(createDetailRow('Object', item.object_name, true));
+      details.appendChild(createDetailRow('Module', item.module || 'SQL*Plus'));
+      details.appendChild(createDetailRow('Action', item.action || 'NONE'));
+      card.appendChild(details);
+
+      const sqlBox = document.createElement('div');
+      sqlBox.className = 'lock-sql-box';
+      const code = document.createElement('code');
+      code.textContent = item.current_sql_text || 'SELECT /* Idle or uncommitted transaction */ FROM DUAL';
+      sqlBox.appendChild(code);
+      card.appendChild(sqlBox);
+
       lockTreeContainer.appendChild(card);
     });
   }
@@ -700,28 +756,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderDrainClusters(results) {
     if (!drainResultsContainer) return;
-    drainResultsContainer.innerHTML = '';
+    drainResultsContainer.textContent = '';
 
     results.forEach(item => {
       const card = document.createElement('div');
       card.className = 'drain-cluster-card';
 
-      let paramsHtml = '';
+      const header = document.createElement('div');
+      header.className = 'drain-cluster-header';
+      const cSpan = document.createElement('span');
+      cSpan.textContent = `Cluster #${item.cluster_id}`;
+      const mSpan = document.createElement('span');
+      mSpan.textContent = 'Drain Tree Match';
+      header.appendChild(cSpan);
+      header.appendChild(mSpan);
+      card.appendChild(header);
+
+      const template = document.createElement('div');
+      template.className = 'drain-template';
+      template.textContent = item.template || '';
+      card.appendChild(template);
+
+      const paramsGrid = document.createElement('div');
+      paramsGrid.className = 'drain-params-grid';
       if (item.parameters) {
         for (const [k, v] of Object.entries(item.parameters)) {
+          const badge = document.createElement('span');
+          badge.className = 'param-badge';
           const valDisplay = Array.isArray(v) ? v.join(', ') : v;
-          paramsHtml += `<span class="param-badge">${k}: ${valDisplay}</span>`;
+          badge.textContent = `${k}: ${valDisplay}`;
+          paramsGrid.appendChild(badge);
         }
       }
-
-      card.innerHTML = `
-        <div class="drain-cluster-header">
-          <span>Cluster #${item.cluster_id}</span>
-          <span>Drain Tree Match</span>
-        </div>
-        <div class="drain-template">${escapeHtml(item.template)}</div>
-        <div class="drain-params-grid">${paramsHtml}</div>
-      `;
+      card.appendChild(paramsGrid);
       drainResultsContainer.appendChild(card);
     });
   }
@@ -883,19 +950,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function addConsoleLog(speaker, text) {
     const item = document.createElement('div');
-    item.className = `console-log-item ${speaker.toLowerCase()}`;
+    item.className = `console-log-item ${(speaker || 'system').toLowerCase()}`;
     const time = new Date().toTimeString().split(' ')[0];
-    item.innerHTML = `
-      <span class="log-time">[${time}]</span>
-      <span class="log-speaker">[${speaker}]</span>
-      <span>${escapeHtml(text)}</span>
-    `;
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = `[${time}]`;
+
+    const speakerSpan = document.createElement('span');
+    speakerSpan.className = 'log-speaker';
+    speakerSpan.textContent = `[${speaker}]`;
+
+    const textSpan = document.createElement('span');
+    textSpan.textContent = String(text ?? '');
+
+    item.appendChild(timeSpan);
+    item.appendChild(document.createTextNode(' '));
+    item.appendChild(speakerSpan);
+    item.appendChild(document.createTextNode(' '));
+    item.appendChild(textSpan);
+
     agentConsoleBody.appendChild(item);
     agentConsoleBody.scrollTop = agentConsoleBody.scrollHeight;
   }
 
   function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 });

@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  ascp-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ascp-diagnostic-agent
+    restart: unless-stopped
+    expose:
+      - "8085"
+    environment:
+      - PORT=8085
+      - ASCP_SECRETS_FILE=/run/secrets/ascp_secrets.json
+      # Fallback token for local dev if secret file not mounted:
+      - ASCP_OPERATOR_TOKENS={"dev-token-998877":{"user":"dba_admin","role":"approver"}}
+    volumes:
+      - ./config/secrets.json:/run/secrets/ascp_secrets.json:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/api/status')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - internal-net
+
+  reverse-proxy:
+    image: nginx:alpine
+    container_name: ascp-nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    depends_on:
+      - ascp-agent
+    networks:
+      - internal-net
+
+networks:
+  internal-net:
+    driver: bridge

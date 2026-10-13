@@ -60,8 +60,11 @@ class ServiceNowClient:
             "verification_query": "SELECT sid, serial#, locked_mode FROM v$locked_object lo JOIN dba_objects do ON lo.object_id = do.object_id WHERE do.object_name LIKE 'MSC_ST_%';"
         }
 
+        corr_id = f"ASCP:{instance_id}:{pipeline_stage.split(':')[0].strip().replace(' ', '_')}:{recommended_remediation}"
+
         return {
             "short_description": short_description,
+            "correlation_id": corr_id,
             "assignment_group": self.config.assignment_group,
             "impact": impact,
             "urgency": urgency,
@@ -69,6 +72,7 @@ class ServiceNowClient:
             "u_diagnostic_payload": {
                 "pipeline_stage": pipeline_stage,
                 "instance_id": instance_id,
+                "correlation_id": corr_id,
                 "affected_staging_tables": affected_staging_objects,
                 "affected_staging_objects": affected_staging_objects,
                 "root_blocker_sid": root_sid,
@@ -100,7 +104,7 @@ class ServiceNowClient:
         payload = self.build_incident_payload(
             short_description=f"ASCP Collection Failure: {failed_phase} phase on {target_table}",
             description=f"Autonomous ASCP Diagnostic Agent detected {domain} on {target_table}. Confidence: {confidence:.1f}%.",
-            pipeline_stage="Stage 2: Planning ODS Load (MSCPDC)",
+            pipeline_stage=f"Stage 2: Planning ODS Load ({failed_phase})",
             instance_id=instance_id,
             affected_staging_objects=[target_table],
             root_blocker_session=blocker,
@@ -111,28 +115,52 @@ class ServiceNowClient:
         )
         run_id = state.get("context", {}).get("run_id")
         if run_id:
-            payload["correlation_id"] = run_id
-            payload["u_diagnostic_payload"]["correlation_id"] = run_id
+            payload["correlation_id"] = f"{payload['correlation_id']}:{run_id}"
+            payload["u_diagnostic_payload"]["correlation_id"] = payload["correlation_id"]
         return payload
 
     def _simulated_result(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate auditable simulated ServiceNow ticket for dry-run and local testing."""
+        """Generate auditable simulated ServiceNow ticket for dry-run and local testing with deduplication."""
+        corr_id = payload.get("correlation_id")
+        if not hasattr(self, "_active_by_correlation_id"):
+            self._active_by_correlation_id = {}
+
+        if corr_id and corr_id in self._active_by_correlation_id:
+            existing = self._active_by_correlation_id[corr_id]
+            result = {
+                "status": "UPDATED_EXISTING",
+                "incident_number": existing["incident_number"],
+                "sys_id": existing["sys_id"],
+                "deduplicated": True,
+                "assignment_group": self.config.assignment_group,
+                "endpoint": f"{self.config.instance_url}{self.config.table_api_path}",
+                "payload": payload,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            }
+            self.created_incidents.append(result)
+            return result
+
         incident_number = f"INC{int(time.time()) % 1000000:06d}"
         sys_id = f"sys_{uuid.uuid4().hex[:16]}"
         result = {
             "status": "SIMULATED_DISPATCH",
             "incident_number": incident_number,
             "sys_id": sys_id,
+            "deduplicated": False,
             "assignment_group": self.config.assignment_group,
             "endpoint": f"{self.config.instance_url}{self.config.table_api_path}",
             "payload": payload,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }
+        if corr_id:
+            self._active_by_correlation_id[corr_id] = result
         self.created_incidents.append(result)
         return result
 
     def dispatch_incident(self, payload: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
-        """POST an incident to ServiceNow. Returns status CREATED, SIMULATED_DISPATCH, SKIPPED or FAILED."""
+        """POST or PATCH an incident to ServiceNow with correlation_id deduplication.
+        Returns status CREATED, UPDATED_EXISTING, SIMULATED_DISPATCH, SKIPPED or FAILED.
+        """
         if not self.config.enabled:
             return {"status": "SKIPPED", "message": "ServiceNow dispatch disabled in config."}
         if self.config.dry_run or not self.config.instance_url:
@@ -143,8 +171,40 @@ class ServiceNowClient:
             self._session = requests.Session()
         url = f"{self.config.instance_url.rstrip('/')}{self.config.table_api_path}"
         auth = (self.config.username, self.config.password)
-        last_error = "no attempt made"
+        corr_id = payload.get("correlation_id")
 
+        # Deduplication check: Query for existing active incident with matching correlation_id
+        if corr_id:
+            try:
+                query_url = f"{url}?sysparm_query=correlation_id={corr_id}^stateNOT IN6,7,8&sysparm_limit=1"
+                q_resp = self._session.get(query_url, auth=auth, timeout=10, headers={"Accept": "application/json"})
+                if q_resp.status_code == 200:
+                    records = q_resp.json().get("result", [])
+                    if records:
+                        existing = records[0]
+                        existing_sys_id = existing.get("sys_id")
+                        existing_num = existing.get("number")
+                        patch_url = f"{url}/{existing_sys_id}"
+                        patch_body = {
+                            "work_notes": f"[ASCP Diagnostic Agent] Recurring diagnosis detected at {time.strftime('%Y-%m-%d %H:%M:%S UTC')}.\n{payload.get('description', '')}",
+                            "u_diagnostic_payload": payload.get("u_diagnostic_payload", {})
+                        }
+                        patch_resp = self._session.patch(patch_url, auth=auth, json=patch_body, timeout=10, headers={"Accept": "application/json"})
+                        if patch_resp.status_code in (200, 201):
+                            res = {
+                                "status": "UPDATED_EXISTING",
+                                "incident_number": existing_num,
+                                "sys_id": existing_sys_id,
+                                "deduplicated": True,
+                                "payload": payload,
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                            }
+                            self.created_incidents.append(res)
+                            return res
+            except Exception as q_err:
+                logger.warning("ServiceNow correlation query failed, falling back to insert: %s", q_err)
+
+        last_error = "no attempt made"
         for attempt in range(max_retries):
             try:
                 resp = self._session.post(
@@ -163,6 +223,7 @@ class ServiceNowClient:
                     "status": "CREATED",
                     "incident_number": data.get("number"),
                     "sys_id": data.get("sys_id"),
+                    "deduplicated": False,
                     "payload": payload,
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 }

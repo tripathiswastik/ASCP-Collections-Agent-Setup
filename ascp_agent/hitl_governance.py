@@ -79,6 +79,38 @@ GOVERNANCE_RULES: Dict[str, HITLGovernanceRule] = {
         requires_mandatory_approval=True,
         requires_dry_run_validation=True,
         description="Mandatory HITL Gate. Executes cmclean.sql to abort hung concurrent managers. Requires explicit DBA sign-off."
+    ),
+    "RESET_REGISTRY": HITLGovernanceRule(
+        risk_tier="HIGH",
+        action_type="Staging Status Registry Reset",
+        target_object="MSC_APPS_INSTANCES.ST_STATUS",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=True,
+        description="Mandatory HITL Gate. Resets ST_STATUS registry flag to 0 (IDLE) following abnormal collection crash. Requires explicit DBA sign-off."
+    ),
+    "EXTEND_UNDO_RETENTION": HITLGovernanceRule(
+        risk_tier="LOW",
+        action_type="Dynamic Parameter Adjustment",
+        target_object="V$PARAMETER.UNDO_RETENTION",
+        requires_mandatory_approval=False,
+        requires_dry_run_validation=False,
+        description="Non-destructive dynamic parameter increase to eliminate ORA-01555 snapshot too old stalls."
+    ),
+    "EXTEND_TABLESPACE": HITLGovernanceRule(
+        risk_tier="MEDIUM",
+        action_type="Storage Quota Allocation",
+        target_object="DBA_TABLESPACES",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=False,
+        description="Adds autoextensible storage to staging tablespaces to prevent ORA-01653 extent exhaustion."
+    ),
+    "FLUSH_SHARED_POOL": HITLGovernanceRule(
+        risk_tier="MEDIUM",
+        action_type="SGA Memory Maintenance",
+        target_object="V$SGASTAT.SHARED_POOL",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=False,
+        description="Flushes SGA shared pool heap to remediate ORA-04031 library cache fragmentation."
     )
 }
 

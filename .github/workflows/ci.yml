@@ -15,6 +15,21 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
 
+    services:
+      oracle:
+        image: gvenzl/oracle-free:slim
+        env:
+          ORACLE_PASSWORD: OraclePassword123!
+          APP_USER: apps
+          APP_USER_PASSWORD: AppsPassword123!
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd "healthcheck.sh"
+          --health-interval 15s
+          --health-timeout 10s
+          --health-retries 10
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -35,9 +50,23 @@ jobs:
         run: |
           ruff check ascp_agent tests web scripts
 
-      - name: Run Test Suite
+      - name: Run Unit & Guardrail Test Suite
         env:
           ASCP_OPERATOR_TOKENS: '{"dev-token": "operator", "admin-token": "lead_dba"}'
         run: |
           python tests/run_all_tests.py
           pytest --cov=ascp_agent tests/
+
+      - name: Run Quantitative Evaluation Benchmark Harness
+        run: |
+          python tests/eval_harness.py
+
+      - name: Run Real Oracle Live Integration Test (ORA-00054 Contention)
+        env:
+          ORACLE_TEST_HOST: localhost
+          ORACLE_TEST_PORT: 1521
+          ORACLE_TEST_SERVICE: FREEPDB1
+          ORACLE_TEST_USER: system
+          ORACLE_TEST_PASSWORD: OraclePassword123!
+        run: |
+          python tests/test_oracle_live_integration.py

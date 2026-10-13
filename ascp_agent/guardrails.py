@@ -7,12 +7,18 @@ Enforces defense-in-depth safety boundaries:
 """
 
 import re
+import time
+from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from ascp_agent.config import GuardrailsConfig
 
 class SecurityViolationError(Exception):
     """Raised when an action violates enterprise security guardrails."""
+    pass
+
+class BlastRadiusViolationError(SecurityViolationError):
+    """Raised when an action violates session termination blast-radius limits."""
     pass
 
 class ExecutionCapExceededError(Exception):
@@ -22,6 +28,169 @@ class ExecutionCapExceededError(Exception):
 class TokenSpendCapExceededError(Exception):
     """Raised when cumulative token spend exceeds the dollar threshold."""
     pass
+
+# Protected Oracle system schemas that must NEVER be terminated
+FORBIDDEN_USERS = {
+    "SYS", "SYSTEM", "DBSNMP", "SYSMAN", "OUTLN", "AUDSYS",
+    "GSMADMIN_INTERNAL", "APPQOSSYS", "ORDDATA", "CTXSYS",
+    "MDSYS", "ANONYMOUS", "XDB", "WMSYS", "LBACSYS", "MGMT_VIEW"
+}
+
+# Permitted EBS & ASCP schemas
+ALLOWED_EBS_USERS = {
+    "APPS", "MSC", "APPLSYS", "APPLSYSPUB", "MRP", "INV", "ONT", "PO", "WIP", "BOM"
+}
+
+# Permitted module prefixes / names for EBS concurrent workers & batch jobs
+ALLOWED_MODULE_PATTERNS = [
+    re.compile(r"^MSC", re.IGNORECASE),
+    re.compile(r"^MSRFWOR", re.IGNORECASE),
+    re.compile(r"^DISCO", re.IGNORECASE),
+    re.compile(r"^SQL\*Plus", re.IGNORECASE),
+    re.compile(r"^TOAD", re.IGNORECASE),
+    re.compile(r"^e:MSC", re.IGNORECASE),
+    re.compile(r"^concurrent", re.IGNORECASE),
+    re.compile(r"^JDBC Thin Client", re.IGNORECASE),
+    re.compile(r"^FND_", re.IGNORECASE),
+]
+
+def validate_session_kill_safety(
+    target_sid: int,
+    target_serial: int,
+    username: Optional[str] = None,
+    module: Optional[str] = None,
+    session_type: Optional[str] = "USER",
+    self_sid: Optional[int] = None
+) -> None:
+    """Enforces blast-radius safety checks:
+    1. Never kill sessions owned by SYS or Oracle system schemas.
+    2. Never kill background processes (TYPE = 'BACKGROUND').
+    3. Never kill agent's own session (self_sid).
+    4. Only allow kills where module or username matches EBS / ASCP batch pattern.
+    """
+    if self_sid is not None and target_sid == self_sid:
+        raise BlastRadiusViolationError(
+            f"Blast radius protection: Refusing to kill agent's own active database session (SID {target_sid})."
+        )
+
+    if session_type and session_type.strip().upper() == "BACKGROUND":
+        raise BlastRadiusViolationError(
+            f"Blast radius protection: Refusing to kill Oracle background kernel session (SID {target_sid})."
+        )
+
+    if username:
+        clean_user = username.strip().upper()
+        if clean_user in FORBIDDEN_USERS:
+            raise BlastRadiusViolationError(
+                f"Blast radius protection: Refusing to kill protected system session owned by '{username}' (SID {target_sid})."
+            )
+
+        # If user is not an allowed EBS user, verify module matches EBS/ASCP batch pattern
+        if clean_user not in ALLOWED_EBS_USERS:
+            mod_str = module or ""
+            is_ebs_mod = any(pat.search(mod_str) for pat in ALLOWED_MODULE_PATTERNS)
+            if not is_ebs_mod:
+                raise BlastRadiusViolationError(
+                    f"Blast radius protection: Session SID {target_sid} (User '{username}', Module '{mod_str}') "
+                    f"does not match recognized EBS/ASCP batch worker or application patterns."
+                )
+
+@dataclass
+class KillRateLimiter:
+    """Enforces cooldown (max 1 kill per instance per N minutes) and daily cap."""
+    cooldown_seconds: int = 300  # 5 minutes
+    daily_cap: int = 5           # Max 5 kills per 24 hours per instance
+    _history: Dict[str, List[float]] = field(default_factory=dict)
+
+    def reset(self) -> None:
+        """Clear limiter history (useful for test isolation)."""
+        self._history.clear()
+
+    def check_and_record_kill(
+        self,
+        instance_id: Any,
+        dry_run: bool = False,
+        now: Optional[float] = None,
+        force_override: bool = False
+    ) -> None:
+        import os
+        if dry_run or force_override or os.environ.get("ASCP_DISABLE_KILL_LIMITER", "").lower() in ("1", "true"):
+            return
+        now_ts = now if now is not None else time.time()
+        key = str(instance_id or "1001")
+        history = self._history.setdefault(key, [])
+        # Retain only entries from the last 24 hours
+        active_24h = [t for t in history if now_ts - t < 86400]
+        self._history[key] = active_24h
+
+        if active_24h:
+            elapsed_since_last = now_ts - active_24h[-1]
+            if elapsed_since_last < self.cooldown_seconds:
+                remaining = int(self.cooldown_seconds - elapsed_since_last)
+                raise BlastRadiusViolationError(
+                    f"Blast radius cooldown active for instance '{key}'. "
+                    f"Minimum {self.cooldown_seconds}s required between kills ({remaining}s remaining)."
+                )
+
+        if len(active_24h) >= self.daily_cap:
+            raise BlastRadiusViolationError(
+                f"Daily kill cap of {self.daily_cap} reached for instance '{key}'. "
+                f"Automated remediation halted to prevent cascading instability. Requires manual DBA evaluation."
+            )
+
+        active_24h.append(now_ts)
+        self._history[key] = active_24h
+
+# Global singleton kill limiter
+GLOBAL_KILL_LIMITER = KillRateLimiter()
+
+class RemediationActionEnum(str, Enum):
+    INSPECT_LOCKS = "INSPECT_LOCKS"
+    KILL_SESSION = "KILL_SESSION"
+    PURGE_STAGING = "PURGE_STAGING"
+    ALIGN_INDEXES = "ALIGN_INDEXES"
+    REFRESH_SNAPSHOT = "REFRESH_SNAPSHOT"
+    PURGE_PIPE = "PURGE_PIPE"
+    RESET_REGISTRY = "RESET_REGISTRY"
+    EXTEND_UNDO_RETENTION = "EXTEND_UNDO_RETENTION"
+    EXTEND_TABLESPACE = "EXTEND_TABLESPACE"
+    FLUSH_SHARED_POOL = "FLUSH_SHARED_POOL"
+    RETRY_CONCURRENT_REQUEST = "RETRY_CONCURRENT_REQUEST"
+    NO_ACTION = "NO_ACTION"
+
+@dataclass
+class TypedActionRequest:
+    action: RemediationActionEnum
+    sid: Optional[int] = None
+    serial: Optional[int] = None
+    inst_id: Optional[int] = None
+    target_object: Optional[str] = None
+    instance_id: Optional[int] = None
+
+def validate_action_from_untrusted_data(action_name: str, params: Optional[Dict[str, Any]] = None) -> TypedActionRequest:
+    """Validates that action originates strictly from an enumerated set of safe actions
+    and typed parameters, ensuring prompt injection cannot emit executable SQL or unauthorized commands.
+    """
+    try:
+        enum_val = RemediationActionEnum(str(action_name).strip().upper())
+    except (ValueError, AttributeError):
+        raise SecurityViolationError(f"Action '{action_name}' is not in the allowed enumerated remediation actions.")
+
+    params = params or {}
+    sid = params.get("sid")
+    serial = params.get("serial")
+    inst_id = params.get("inst_id")
+    target_obj = params.get("target_object")
+    instance_id = params.get("instance_id")
+
+    return TypedActionRequest(
+        action=enum_val,
+        sid=int(sid) if sid is not None else None,
+        serial=int(serial) if serial is not None else None,
+        inst_id=int(inst_id) if inst_id is not None else None,
+        target_object=str(target_obj) if target_obj is not None else None,
+        instance_id=int(instance_id) if instance_id is not None else None
+    )
 
 @dataclass
 class TokenTracker:
@@ -45,6 +214,9 @@ _KILL_PATTERN = re.compile(r"^ALTER SYSTEM KILL SESSION '\d+,\d+(?:,@\d+)?' IMME
 _CALL_PATTERN = re.compile(r"^(?:BEGIN|EXEC) ([A-Z0-9_$#.]+)\((.*)\)(?:; END)?$")
 _SAFE_ARGUMENTS = re.compile(r"^[A-Z0-9_$#.,=> ']*$")
 _REGISTRY_RESET_PATTERN = re.compile(r"^UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = \d+$")
+_FLUSH_POOL_PATTERN = re.compile(r"^ALTER SYSTEM FLUSH SHARED_POOL$")
+_UNDO_RETENTION_PATTERN = re.compile(r"^ALTER SYSTEM SET UNDO_RETENTION = \d+(?: SCOPE=(?:BOTH|SPFILE|MEMORY))?$")
+_EXTEND_TS_PATTERN = re.compile(r"^ALTER TABLESPACE [A-Z0-9_$#]+ ADD DATAFILE SIZE \d+[KMGT] AUTOEXTEND ON NEXT \d+[KMGT]$")
 
 class EnterpriseGuardrails:
     """Enforces least-privilege, sanitization, step limits, and cost controls."""
@@ -110,6 +282,9 @@ class EnterpriseGuardrails:
             return True
 
         if _REGISTRY_RESET_PATTERN.match(upper):
+            return True
+
+        if _FLUSH_POOL_PATTERN.match(upper) or _UNDO_RETENTION_PATTERN.match(upper) or _EXTEND_TS_PATTERN.match(upper):
             return True
 
         if self._is_allowed_call(upper):
@@ -224,6 +399,9 @@ class EnterpriseGuardrails:
             return True
 
         if _REGISTRY_RESET_PATTERN.match(upper):
+            return True
+
+        if _FLUSH_POOL_PATTERN.match(upper) or _UNDO_RETENTION_PATTERN.match(upper) or _EXTEND_TS_PATTERN.match(upper):
             return True
 
         if self._is_allowed_call(upper):
