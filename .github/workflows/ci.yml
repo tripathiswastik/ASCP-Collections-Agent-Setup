@@ -45,6 +45,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest pytest-cov ruff
+          pip install -e .
 
       - name: Run Ruff Linter
         run: |
@@ -53,16 +54,20 @@ jobs:
       - name: Run Unit & Guardrail Test Suite
         env:
           ASCP_OPERATOR_TOKENS: '{"dev-token": "operator", "admin-token": "lead_dba"}'
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           python tests/run_all_tests.py
           pytest --cov=ascp_agent tests/
 
       - name: Run Quantitative Evaluation Benchmark Harness
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           python tests/eval_harness.py
 
       - name: Run Real Oracle Live Integration Test (ORA-00054 Contention)
         env:
+          PYTHONPATH: ${{ github.workspace }}
           ORACLE_TEST_HOST: localhost
           ORACLE_TEST_PORT: 1521
           ORACLE_TEST_SERVICE: FREEPDB1

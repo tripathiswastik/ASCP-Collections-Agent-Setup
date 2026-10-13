@@ -6,8 +6,15 @@ Runs-in: Pytest and unittest execution harnesses across local and CI environment
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+
+# Ensure repository root is on sys.path for pytest collection
+REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 # Reusable Raw Log Fixture
 SAMPLE_ORA00054_LOGS: list[str] = [
