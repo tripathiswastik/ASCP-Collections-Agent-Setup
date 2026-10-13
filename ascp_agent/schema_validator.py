@@ -115,9 +115,23 @@ class DiagnosticReport:
 
     @classmethod
     def model_validate_json(cls, json_str: str) -> DiagnosticReport:
-        """Parses and validates JSON string into DiagnosticReport."""
+        """Parses and validates JSON string into DiagnosticReport, robustly stripping code fences."""
+        import re
         clean_str = StratifiedPromptBuilder.clean_json_output(json_str)
-        data = json.loads(clean_str)
+        # If markdown code fence remains or exists within text
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", json_str, flags=re.DOTALL)
+        if match:
+            clean_str = match.group(1).strip()
+        try:
+            data = json.loads(clean_str)
+        except json.JSONDecodeError:
+            # Fallback: scan for outer json braces
+            s_idx = clean_str.find("{")
+            e_idx = clean_str.rfind("}")
+            if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+                data = json.loads(clean_str[s_idx : e_idx + 1])
+            else:
+                raise
         return cls.from_dict(data)
 
     def model_dump(self) -> dict[str, Any]:
@@ -140,6 +154,7 @@ class DiagnosticReport:
 
 def validate_schema_node(state: dict[str, Any]) -> dict[str, Any]:
     """Validates raw LLM output against the required machine-parseable JSON schema."""
+    import traceback
     raw_output = state.get("raw_llm_output", "")
     retry_count = state.get("retry_count", 0)
 
@@ -149,13 +164,22 @@ def validate_schema_node(state: dict[str, Any]) -> dict[str, Any]:
             "parsed_diagnosis": validated.model_dump(),
             "is_validated": True,
             "confidence_score": validated.diagnostic_summary.confidence_score * 100.0,
-            "requires_human_approval": validated.requires_human_approval
+            "requires_human_approval": validated.requires_human_approval,
+            "validation_error": None
         }
     except (ValueError, TypeError, json.JSONDecodeError, SchemaValidationError) as err:
+        tb = traceback.format_exc()
+        reprompt_msg = (
+            f"Schema validation failed (Attempt {retry_count + 1}/3):\n"
+            f"Error: {err}\n"
+            f"Traceback:\n{tb}\n"
+            f"Please regenerate the diagnostic report strictly conforming to the required DiagnosticReport schema."
+        )
         return {
             "is_validated": False,
             "retry_count": retry_count + 1,
-            "validation_error": str(err)
+            "validation_error": f"{type(err).__name__}: {err}",
+            "reprompt_traceback": reprompt_msg
         }
 
 def check_validation_routing(state: dict[str, Any]) -> str:

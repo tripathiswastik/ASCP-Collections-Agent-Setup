@@ -386,7 +386,7 @@ class LockDiagnosticsEngine:
             else:
                 used_urec = 420  # Standard low transaction volume
         
-        high_risk = used_urec > 100000
+        high_risk = used_urec > 50000
         estimated_rollback_sec = round(used_urec * 0.0003, 1)
 
         return {

@@ -84,6 +84,9 @@ class InterruptSignal(BaseException):
         super().__init__("Graph paused for human sign-off.")
         self.payload = payload
 
+class GraphInterrupt(InterruptSignal):
+    """LangGraph standard GraphInterrupt compatibility class."""
+
 def interrupt(payload: dict[str, Any]) -> Any:
     """Pauses graph execution, persists state, and surfaces the payload to an operator."""
     raise InterruptSignal(payload)
@@ -112,6 +115,13 @@ class DiagnosticStateSchema(TypedDict, total=False):
     sql_traces: Annotated[list[dict[str, Any]], operator.add]
     raw_logs: Annotated[list[str], operator.add]
     audit_trail: Annotated[list[dict[str, Any]], operator.add]
+    evidence_bundle: Annotated[list[dict[str, Any]], operator.add]
+    ranked_hypotheses: Annotated[list[dict[str, Any]], operator.add]
+    missing_evidence: Annotated[list[str], operator.add]
+    remediation_blockers: Annotated[list[str], operator.add]
+    worker_logs: Annotated[list[Any], operator.add]
+    detected_errors: Annotated[list[str], operator.add]
+    lock_hierarchy: Annotated[list[dict[str, Any]], operator.add]
     context: DiagnosticContext
     failure_domain: str
     confidence_score: float
@@ -147,7 +157,14 @@ class AgentState(dict):
         "log_templates": operator.add,
         "sql_traces": operator.add,
         "raw_logs": operator.add,
-        "audit_trail": operator.add
+        "audit_trail": operator.add,
+        "evidence_bundle": operator.add,
+        "ranked_hypotheses": operator.add,
+        "missing_evidence": operator.add,
+        "remediation_blockers": operator.add,
+        "worker_logs": operator.add,
+        "detected_errors": operator.add,
+        "lock_hierarchy": operator.add,
     }
 
     def __init__(self, *args, **kwargs):
@@ -163,6 +180,13 @@ class AgentState(dict):
         self.setdefault("sql_traces", [])
         self.setdefault("raw_logs", [])
         self.setdefault("audit_trail", [])
+        self.setdefault("evidence_bundle", [])
+        self.setdefault("ranked_hypotheses", [])
+        self.setdefault("missing_evidence", [])
+        self.setdefault("remediation_blockers", [])
+        self.setdefault("worker_logs", [])
+        self.setdefault("detected_errors", [])
+        self.setdefault("lock_hierarchy", [])
         self.setdefault("failure_domain", "DATABASE_LOCK")
         self.setdefault("confidence_score", 0.0)
         self.setdefault("risk_level", "HIGH")

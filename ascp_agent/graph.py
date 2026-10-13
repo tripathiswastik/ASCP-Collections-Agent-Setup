@@ -893,9 +893,17 @@ ACTION_EXECUTORS: dict[str, Callable[[RemediationEngine, AgentState, bool], Any]
     "FLUSH_SHARED_POOL": lambda eng, st, dry: eng.execute_flush_shared_pool(
         dry_run=dry
     ),
-    "RESET_REGISTRY": lambda eng, st, dry: eng.execute_reset_registry(
+    "RESET_REGISTRY": lambda eng, st, dry: eng.recover_crashed_pipeline_registry(
         instance_id=st.get("context", {}).get("instance_id", 1001),
-        dry_run=dry
+        instance_code=st.get("context", {}).get("instance_code", "PRD1"),
+        dry_run=dry,
+        active_workers_count=st.get("context", {}).get("active_workers", 0)
+    ),
+    "RECOVER_CRASHED_PIPELINE": lambda eng, st, dry: eng.recover_crashed_pipeline_registry(
+        instance_id=st.get("context", {}).get("instance_id", 1001),
+        instance_code=st.get("context", {}).get("instance_code", "PRD1"),
+        dry_run=dry,
+        active_workers_count=st.get("context", {}).get("active_workers", 0)
     ),
     "INSPECT_LOCKS": lambda eng, st, dry: eng.execute_inspect_locks(
         dry_run=dry

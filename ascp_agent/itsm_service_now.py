@@ -22,15 +22,50 @@ class ServiceNowClient:
         self.config = config or ServiceNowConfig()
         self.created_incidents = deque(maxlen=200)
         self._session = None
+        self._cached_oauth_token: str | None = None
+        self._token_expires_at: float = 0.0
+        self._token_ttl_seconds: int = 1800  # 30 minutes
 
     def get_oauth_token_endpoint(self) -> str:
         """Dynamically constructs instance-specific OAuth token endpoint."""
         base_url = self.config.instance_url.rstrip("/") if self.config.instance_url else "https://instance.service-now.com"
         return f"{base_url}/oauth_token.do"
 
-    def get_valid_oauth_token(self) -> str:
-        """Retrieves simulated or cached OAuth access token."""
-        return f"tok_sn_{uuid.uuid4().hex[:24]}"
+    def get_valid_oauth_token(self, force_refresh: bool = False) -> str:
+        """Retrieves cached OAuth access token, automatically refreshing if expired (30m TTL)."""
+        now = time.time()
+        # Return valid cached token if expiry is > 60 seconds away
+        if not force_refresh and self._cached_oauth_token and (self._token_expires_at - now > 60):
+            return self._cached_oauth_token
+
+        use_oauth = getattr(self.config, "use_oauth", False) or getattr(self.config, "oauth_client_id", None)
+        if not self.config.dry_run and self.config.instance_url and use_oauth:
+            import requests
+            token_url = getattr(self.config, "oauth_token_url", None) or self.get_oauth_token_endpoint()
+            data = {
+                "grant_type": "password",
+                "client_id": getattr(self.config, "oauth_client_id", ""),
+                "client_secret": getattr(self.config, "oauth_client_secret", ""),
+                "username": self.config.username,
+                "password": self.config.password,
+            }
+            try:
+                resp = requests.post(token_url, data=data, timeout=10)
+                if resp.status_code == 200:
+                    token_data = resp.json()
+                    self._cached_oauth_token = token_data.get("access_token", f"tok_sn_{uuid.uuid4().hex[:24]}")
+                    expires_in = int(token_data.get("expires_in", self._token_ttl_seconds))
+                    self._token_expires_at = now + expires_in
+                    logger.info("Successfully refreshed ServiceNow OAuth token (expires in %ds).", expires_in)
+                    return self._cached_oauth_token
+                logger.warning("ServiceNow OAuth endpoint HTTP %d. Falling back to cached token.", resp.status_code)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ServiceNow OAuth refresh request error (%s). Falling back.", exc)
+
+        # Fallback or simulated token (30-minute validity)
+        self._cached_oauth_token = f"tok_sn_{uuid.uuid4().hex[:24]}"
+        self._token_expires_at = now + self._token_ttl_seconds
+        return self._cached_oauth_token
 
     def build_incident_payload(
         self,
@@ -173,14 +208,23 @@ class ServiceNowClient:
         if self._session is None:
             self._session = requests.Session()
         url = f"{self.config.instance_url.rstrip('/')}{self.config.table_api_path}"
-        auth = (self.config.username, self.config.password)
+
+        use_oauth = getattr(self.config, "use_oauth", False) or getattr(self.config, "oauth_client_id", False)
+        headers = {"Accept": "application/json"}
+        if use_oauth:
+            token = self.get_valid_oauth_token()
+            headers["Authorization"] = f"Bearer {token}"
+            auth = None
+        else:
+            auth = (self.config.username, self.config.password)
+
         corr_id = payload.get("correlation_id")
 
         # Deduplication check: Query for existing active incident with matching correlation_id
         if corr_id:
             try:
                 query_url = f"{url}?sysparm_query=correlation_id={corr_id}^stateNOT IN6,7,8&sysparm_limit=1"
-                q_resp = self._session.get(query_url, auth=auth, timeout=10, headers={"Accept": "application/json"})
+                q_resp = self._session.get(query_url, auth=auth, timeout=10, headers=headers)
                 if q_resp.status_code == 200:
                     records = q_resp.json().get("result", [])
                     if records:
@@ -192,7 +236,7 @@ class ServiceNowClient:
                             "work_notes": f"[ASCP Diagnostic Agent] Recurring diagnosis detected at {time.strftime('%Y-%m-%d %H:%M:%S UTC')}.\n{payload.get('description', '')}",
                             "u_diagnostic_payload": payload.get("u_diagnostic_payload", {})
                         }
-                        patch_resp = self._session.patch(patch_url, auth=auth, json=patch_body, timeout=10, headers={"Accept": "application/json"})
+                        patch_resp = self._session.patch(patch_url, auth=auth, json=patch_body, timeout=10, headers=headers)
                         if patch_resp.status_code in (200, 201):
                             res = {
                                 "status": "UPDATED_EXISTING",
@@ -215,7 +259,7 @@ class ServiceNowClient:
                     auth=auth,
                     json=payload,
                     timeout=10,
-                    headers={"Accept": "application/json"}
+                    headers=headers
                 )
             except requests.RequestException as exc:
                 last_error = f"request error: {exc}"
@@ -232,9 +276,23 @@ class ServiceNowClient:
                 }
                 self.created_incidents.append(result)
                 return result
+            if resp.status_code == 401 and attempt == 0 and use_oauth:
+                logger.warning("HTTP 401 Unauthorized from ServiceNow. Forcing OAuth token refresh...")
+                token = self.get_valid_oauth_token(force_refresh=True)
+                headers["Authorization"] = f"Bearer {token}"
+                continue
             if resp.status_code == 429:
-                last_error = "HTTP 429 after retries"
-                time.sleep((2 ** attempt) * 0.5 + 0.1)
+                retry_after_hdr = resp.headers.get("Retry-After")
+                if retry_after_hdr and retry_after_hdr.strip().isdigit():
+                    backoff = float(retry_after_hdr.strip()) + 0.1
+                else:
+                    backoff = min(60.0, ((2 ** attempt) * 1.0) + 0.2)
+                logger.warning(
+                    "HTTP 429 rate limit received from ServiceNow. Backing off for %.2fs (attempt %d/%d)...",
+                    backoff, attempt + 1, max_retries
+                )
+                last_error = f"HTTP 429 rate limit exceeded after {attempt + 1} retries"
+                time.sleep(backoff)
                 continue
             last_error = f"HTTP {resp.status_code}"
             break

@@ -9,6 +9,7 @@ Executes targeted interventions with strict parameter checking and execution gua
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -16,6 +17,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ascp_agent.guardrails import EnterpriseGuardrails
+
+logger = logging.getLogger(__name__)
 
 _IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9_$#]{0,29}(\.[A-Z][A-Z0-9_$#]{0,29})?$")
 
@@ -93,7 +96,7 @@ def format_purge_staging_sql(instance_id: int = 1001, validation: str = "N", pac
 def format_registry_reset_sql(instance_id: int = 1001, status: int = 0) -> str:
     """Format standardized SQL statement to reset instance ST_STATUS in registry."""
     inst = _require_int(instance_id, "instance_id")
-    return f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = {int(status)} WHERE INSTANCE_ID = {inst}; COMMIT;"
+    return f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = {int(status)} WHERE INSTANCE_ID = {inst}"
 
 def format_align_indexes_sql(table_name: str) -> str:
     """Format standardized index alignment procedure call for partition exchanges."""
@@ -270,11 +273,35 @@ class RemediationEngine:
         if undo_check and undo_check.get("high_rollback_risk") and not force_override:
             used = undo_check.get("used_urec", 0)
             sec = undo_check.get("estimated_rollback_sec", 0)
+            sn_ticket = None
+            try:
+                from ascp_agent.itsm_service_now import ServiceNowClient
+                sn_client = ServiceNowClient()
+                ticket_payload = {
+                    "short_description": f"URGENT: High Rollback Blockade for Root Blocker SID {v_sid} on {v_obj}",
+                    "description": (
+                        f"Root blocker session SID {v_sid} (SERIAL# {v_serial}) holds Exclusive Mode 6 lock on {v_obj} "
+                        f"with {used:,} uncommitted undo records in V$TRANSACTION. Estimated PMON rollback time: {sec}s. "
+                        f"Automated KILL SESSION was aborted to avoid freeze on 'enq: TM - contention'. "
+                        f"Manual DBA coordination required."
+                    ),
+                    "impact": "1",
+                    "urgency": "1",
+                    "priority": "1",
+                    "category": "Database Lock Contention",
+                    "assignment_group": "DBA-ORACLE-PRODUCTION",
+                    "cmdb_ci": "EBS-ASCP-PROD",
+                }
+                sn_ticket = sn_client.dispatch_incident(ticket_payload)
+            except Exception as sn_exc:  # noqa: BLE001
+                logger.warning("Failed to dispatch ServiceNow alert for high undo volume: %s", sn_exc)
+
+            sn_info = f" Dispatched P1 incident {sn_ticket.get('incident_number', '')} to DBA via ServiceNow." if sn_ticket else " Flagged high-priority alert for DBA."
             return RemediationResult(
                 action="DEFERRED_ROLLBACK_ALERT",
                 success=False,
                 command_executed=f"-- TERMINATION DEFERRED: High Undo Rollback Volume ({used} records)",
-                message=f"Session termination deferred: SID {v_sid} has {used} uncommitted undo records (estimated {sec}s rollback). Immediate kill will hang on enq: TM - contention while PMON rolls back. Dispatched alert to DBA via ServiceNow.",
+                message=f"Session termination deferred: SID {v_sid} has {used} uncommitted undo records (estimated {sec}s rollback). Immediate kill will hang on enq: TM - contention while PMON rolls back.{sn_info}",
                 target_object=v_obj,
                 execution_time_ms=round((time.time() - start) * 1000, 2),
                 audit_record={
@@ -283,6 +310,8 @@ class RemediationEngine:
                     "sid": v_sid,
                     "serial": v_serial,
                     "used_urec": used,
+                    "estimated_rollback_sec": sec,
+                    "servicenow_incident": sn_ticket,
                     "status": "DEFERRED",
                     "timestamp": _utc_now()
                 },
@@ -450,6 +479,64 @@ class RemediationEngine:
             audit_data={"instance_id": v_inst, "st_status": 0},
             dry_run=dry_run,
             message=f"MSC_APPS_INSTANCES.ST_STATUS for instance {v_inst} reset to 0 (IDLE) allowing new collections to launch."
+        )
+
+    def recover_crashed_pipeline_registry(
+        self,
+        instance_id: int = 1001,
+        instance_code: str = "PRD1",
+        dry_run: bool = False,
+        active_workers_count: int = 0
+    ) -> RemediationResult:
+        """Automates recovery subroutine for crashed pipeline registry locks (ST_STATUS > 0).
+        Verifies process termination (0 active workers), resets ST_STATUS = 0,
+        and executes Planning Data Collection - Purge Staging Tables with Validation = No.
+        """
+        start = time.time()
+        v_inst = _require_int(instance_id, "instance_id")
+        v_code = _require_identifier(instance_code, "instance_code")
+
+        if active_workers_count > 0:
+            return RemediationResult(
+                action="RECOVERY_BLOCKED_ACTIVE_WORKERS",
+                success=False,
+                command_executed="-- RECOVERY BLOCKED: Concurrent workers are still running",
+                message=(
+                    f"Refusing to reset ST_STATUS: {active_workers_count} concurrent worker processes "
+                    f"are still active for instance {v_code} ({v_inst}). Terminate workers before resetting registry."
+                ),
+                target_object="MSC_APPS_INSTANCES",
+                execution_time_ms=round((time.time() - start) * 1000, 2),
+                audit_record={
+                    "action": "RECOVERY_BLOCKED_ACTIVE_WORKERS",
+                    "instance_id": v_inst,
+                    "active_workers": active_workers_count,
+                    "status": "BLOCKED",
+                    "timestamp": _utc_now()
+                },
+                dry_run=dry_run
+            )
+
+        purge_sql = format_purge_staging_sql(v_inst, validation="N")
+        reset_sql = format_registry_reset_sql(v_inst, status=0)
+        combined_sql = f"{reset_sql}\n{purge_sql}"
+
+        return self._run(
+            action="RECOVER_CRASHED_PIPELINE",
+            sql_statement=combined_sql,
+            target_object=f"MSC_APPS_INSTANCES({v_inst}) / MSC_ST_*",
+            audit_data={
+                "instance_id": v_inst,
+                "instance_code": v_code,
+                "active_workers_verified": 0,
+                "st_status_reset": 0,
+                "purge_staging": "Validation=No"
+            },
+            dry_run=dry_run,
+            message=(
+                f"Recovered crashed pipeline registry for instance {v_code} ({v_inst}): "
+                f"verified 0 active workers, reset ST_STATUS = 0, and executed Purge Staging Tables with Validation = No."
+            )
         )
 
     def execute_inspect_locks(self, dry_run: bool = False) -> RemediationResult:

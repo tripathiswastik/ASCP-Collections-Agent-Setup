@@ -10,9 +10,13 @@ Evaluates the diagnostic agent across:
 
 from __future__ import annotations
 
+import sys
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ascp_agent.diagnostic_tools import (
     SimulatedOracleAdapter,
