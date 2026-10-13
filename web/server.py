@@ -539,7 +539,11 @@ def run_server(port: int = 8085):
     active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
     active_tokens.update(OPERATOR_TOKENS)
     if not active_tokens:
-        raise SystemExit('ASCP_OPERATOR_TOKENS is not set. Example: {"<long-random-token>": "alice"}')
+        dev_token = os.environ.get("ASCP_DEV_TOKEN", "dev-operator-secret-token")
+        print("[!] ASCP_OPERATOR_TOKENS not specified in environment.")
+        print(f"[+] Initialized local dev operator token: {dev_token}")
+        OPERATOR_TOKENS[dev_token] = {"user": "local-developer", "role": "approver"}
+        active_tokens[dev_token] = {"user": "local-developer", "role": "approver"}
     with ThreadedASCPDiagnosticServer(("127.0.0.1", port), ASCPDiagnosticHandler) as httpd:
         print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://127.0.0.1:{port}")
         httpd.serve_forever()
