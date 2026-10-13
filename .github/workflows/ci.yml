@@ -53,7 +53,7 @@ jobs:
 
       - name: Run Unit & Guardrail Test Suite
         env:
-          ASCP_OPERATOR_TOKENS: '{"dev-token": "operator", "admin-token": "lead_dba"}'
+          ASCP_OPERATOR_TOKENS: '{"dev-token": {"user": "operator", "role": "approver"}, "admin-token": {"user": "lead_dba", "role": "approver"}}'
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python tests/run_all_tests.py

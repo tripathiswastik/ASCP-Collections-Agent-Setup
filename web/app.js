@@ -7,9 +7,8 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // API Security Configuration
-  // Operator token is kept per session; non-local environments strictly require operator input.
-  const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  let API_TOKEN = sessionStorage.getItem('ascpToken') || (isLocalDev ? 'dev-operator-secret-token' : '');
+  // Operator token is kept per session; strictly requires operator input or sessionStorage.
+  let API_TOKEN = sessionStorage.getItem('ascpToken') || '';
 
   const tokenStatusPill = document.getElementById('tokenStatusPill');
   const tokenBadgeLabel = document.getElementById('tokenBadgeLabel');
@@ -41,7 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!tokenModal) return;
     if (tokenInput) {
       tokenInput.value = API_TOKEN;
-      tokenInput.placeholder = isPromptForAuth ? 'Authentication required. Enter operator token' : (isLocalDev ? 'e.g. dev-operator-secret-token' : 'Enter assigned operator token');
+      tokenInput.placeholder = isPromptForAuth ? 'Authentication required. Enter operator token' : 'Enter assigned operator token';
     }
     tokenModal.classList.remove('hidden');
     if (tokenInput) tokenInput.focus();
@@ -504,8 +503,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Draw Root Blocker Node (Top Center)
+    const sid = Number(rootItem.sid);
     svgHtml += `
-      <g class="svg-lock-node" data-node-type="root" data-sid="${rootItem.sid}" transform="translate(195, 16)">
+      <g class="svg-lock-node" data-node-type="root" data-sid="${sid}" transform="translate(195, 16)">
         <rect width="290" height="72" rx="8" fill="url(#rootBgGrad)" stroke="#ef4444" stroke-width="1.8" filter="url(#nodeGlowRed)"/>
         
         <!-- Pulsing alert beacon dot -->
@@ -516,7 +516,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         <!-- Node Header & Badges -->
         <text x="34" y="24" fill="#ffffff" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="700">
-          ROOT BLOCKER: SID ${rootItem.sid}
+          ROOT BLOCKER: SID ${sid}
         </text>
         <rect x="180" y="11" width="98" height="18" rx="4" fill="#ef4444" fill-opacity="0.25" stroke="#ef4444" stroke-width="0.8"/>
         <text x="229" y="23" text-anchor="middle" fill="#fca5a5" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="600">
@@ -528,7 +528,7 @@ document.addEventListener('DOMContentLoaded', () => {
           Target: <tspan fill="#f87171" font-weight="600" font-family="'JetBrains Mono', monospace">${escapeHtml(rootItem.object_name)}</tspan> | User: ${escapeHtml(rootItem.oracle_username)}
         </text>
         <text x="20" y="60" fill="#94a3b8" font-family="'Inter', sans-serif" font-size="10">
-          Module: <tspan fill="#e2e8f0">${escapeHtml(rootItem.module || 'SQL*Plus')}</tspan> (${escapeHtml(rootItem.action || 'MANUAL')}) &bull; Click to Inspect
+          Module: <tspan fill="#e2e8f0">${escapeHtml(rootItem.module || 'SQL*Plus')}</tspan> (${escapeHtml(rootItem.action || 'MANUAL')}) \u2022 Click to Inspect
         </text>
       </g>
     `;
@@ -540,15 +540,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const boxH = 68;
       const leftX = coords.x - (boxW / 2);
       const topY = coords.y;
+      const wSid = Number(w.sid);
 
       svgHtml += `
-        <g class="svg-lock-node" data-node-type="worker" data-sid="${w.sid}" transform="translate(${leftX}, ${topY})">
+        <g class="svg-lock-node" data-node-type="worker" data-sid="${wSid}" transform="translate(${leftX}, ${topY})">
           <rect width="${boxW}" height="${boxH}" rx="8" fill="url(#workerBgGrad)" stroke="#f59e0b" stroke-width="1.4" filter="url(#nodeGlowAmber)"/>
           
           <!-- Mode 0 Waiting Badge -->
           <circle cx="18" cy="20" r="4.5" fill="#f59e0b"/>
           <text x="30" y="23" fill="#ffffff" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">
-            WORKER: SID ${w.sid}
+            WORKER: SID ${wSid}
           </text>
           <rect x="${boxW - 82}" y="10" width="72" height="17" rx="3" fill="#f59e0b" fill-opacity="0.2" stroke="#f59e0b" stroke-width="0.7"/>
           <text x="${boxW - 46}" y="22" text-anchor="middle" fill="#fcd34d" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="600">
@@ -797,7 +798,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     addConsoleLog('STREAM', `--- Initiating Live Log Telemetry Stream (${logs.length} events) ---`);
     if (drainStreamStats) {
-      drainStreamStats.textContent = `Streaming Active &bull; 0 / ${logs.length} Lines`;
+      drainStreamStats.textContent = `Streaming Active \u2022 0 / ${logs.length} Lines`;
     }
 
     let lineIndex = 0;
@@ -851,7 +852,7 @@ document.addEventListener('DOMContentLoaded', () => {
       streamLogsText.textContent = 'Stream Logs Live';
     }
     if (drainStreamStats) {
-      drainStreamStats.textContent = 'Stream Complete &bull; Fixed-Depth Tree Ready';
+      drainStreamStats.textContent = 'Stream Complete \u2022 Fixed-Depth Tree Ready';
     }
   }
 

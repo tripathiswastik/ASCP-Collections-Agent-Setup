@@ -10,6 +10,7 @@ Measures:
 from __future__ import annotations
 
 import os
+import random
 import sys
 from typing import Any
 
@@ -20,6 +21,16 @@ if BASE_DIR not in sys.path:
 
 from ascp_agent.graph import create_ascp_diagnostic_graph
 from ascp_agent.simulator import SCENARIOS
+
+NOISE = ["[INFO] heartbeat ok", "[WARN] slow fetch on MSC_ST_SUPPLIES"]
+
+
+def perturb(lines: list[str], seed: int) -> list[str]:
+    rng = random.Random(seed)
+    out = list(lines)
+    for _ in range(3):
+        out.insert(rng.randrange(len(out) + 1), rng.choice(NOISE))
+    return out
 
 BENCHMARK_DATASET: list[dict[str, Any]] = [
     {
@@ -147,52 +158,38 @@ BENCHMARK_DATASET: list[dict[str, Any]] = [
 ]
 
 
-def run_evaluation_benchmark() -> dict[str, Any]:
-    print("=" * 80)
-    print("ASCP DIAGNOSTIC AGENT QUANTITATIVE EVALUATION BENCHMARK")
-    print("=" * 80)
-
-    total_cases = len(BENCHMARK_DATASET)
+def _evaluate_subset(name: str, cases: list[tuple[dict[str, Any], list[str]]]) -> dict[str, Any]:
+    print(f"\n--- Running Evaluation Subset: {name} ({len(cases)} cases) ---")
+    total_cases = len(cases)
     classification_hits = 0
     action_hits = 0
     false_kills = 0
     non_destructive_cases = 0
 
     confidence_scores: list[float] = []
-    correct_labels: list[int] = []  # 1 for correct, 0 for incorrect
-
+    correct_labels: list[int] = []
     results = []
 
-    for test_case in BENCHMARK_DATASET:
-        case_id = test_case["id"]
-        scen_key = test_case.get("scenario_key")
-        if scen_key and scen_key in SCENARIOS:
-            raw_logs = SCENARIOS[scen_key]["logs"]
-        else:
-            raw_logs = test_case.get("custom_logs", [])
-
-        # Run diagnosis through the LangGraph engine
+    for idx, (test_case, raw_logs) in enumerate(cases):
+        case_id = f"{test_case['id']}-{name[:4].lower()}"
         graph = create_ascp_diagnostic_graph()
         state = graph.invoke(
             initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": raw_logs},
-            config={"configurable": {"thread_id": f"eval-{case_id}"}}
+            config={"configurable": {"thread_id": f"eval-{case_id}-{idx}"}}
         )
 
         classified_mode = state.get("failure_mode", "UNKNOWN")
         recommended_action = state.get("remediation_action", "INSPECT_LOCKS")
         confidence = float(state.get("confidence", 0.0))
 
-        # Check classification
         class_match = (classified_mode == test_case["expected_failure_mode"])
         if class_match:
             classification_hits += 1
 
-        # Check action
         action_match = (recommended_action == test_case["expected_action"])
         if action_match:
             action_hits += 1
 
-        # Check false-kill rate
         if not test_case["is_destructive_candidate"]:
             non_destructive_cases += 1
             if recommended_action == "KILL_SESSION":
@@ -202,11 +199,6 @@ def run_evaluation_benchmark() -> dict[str, Any]:
         confidence_scores.append(confidence)
         correct_labels.append(is_overall_correct)
 
-        status_mark = "PASS" if is_overall_correct else "FAIL"
-        print(f"[{status_mark}] {case_id}: {test_case['description'][:50]}...")
-        print(f"       Expected: mode={test_case['expected_failure_mode']}, action={test_case['expected_action']}")
-        print(f"       Observed: mode={classified_mode}, action={recommended_action}, conf={confidence:.2f}")
-
         results.append({
             "case_id": case_id,
             "class_match": class_match,
@@ -215,51 +207,14 @@ def run_evaluation_benchmark() -> dict[str, Any]:
             "is_correct": is_overall_correct
         })
 
-    # Quantitative Metrics Computation
     class_acc = (classification_hits / total_cases) * 100.0
     action_acc = (action_hits / total_cases) * 100.0
     false_kill_rate = (false_kills / non_destructive_cases * 100.0) if non_destructive_cases > 0 else 0.0
-
-    # Brier Score: Mean squared error between confidence and actual outcome
-    # Brier = (1 / N) * sum((confidence - actual)^2)
     brier_score = sum((c - y) ** 2 for c, y in zip(confidence_scores, correct_labels)) / total_cases
 
-    # Calibration Bins
-    bins = {
-        "0.0 - 0.5": {"confs": [], "correct": []},
-        "0.5 - 0.8": {"confs": [], "correct": []},
-        "0.8 - 1.0": {"confs": [], "correct": []}
-    }
-    for c, y in zip(confidence_scores, correct_labels):
-        if c < 0.5:
-            b = bins["0.0 - 0.5"]
-        elif c < 0.8:
-            b = bins["0.5 - 0.8"]
-        else:
-            b = bins["0.8 - 1.0"]
-        b["confs"].append(c)
-        b["correct"].append(y)
-
-    print("\n" + "=" * 80)
-    print("EVALUATION HARNESS METRICS SUMMARY")
-    print("=" * 80)
-    print(f"Total Benchmark Test Cases:            {total_cases}")
-    print(f"Classification Accuracy:               {class_acc:.1f}% ({classification_hits}/{total_cases})")
-    print(f"Remediation Action Accuracy:           {action_acc:.1f}% ({action_hits}/{total_cases})")
-    print(f"False-Kill Rate (Non-locking cases):   {false_kill_rate:.1f}% ({false_kills}/{non_destructive_cases})")
-    print(f"Brier Calibration Score:               {brier_score:.4f} (lower is better, 0.0 = perfect calibration)")
-    print("-" * 80)
-    print("Confidence Calibration Tracking:")
-    for b_name, b_data in bins.items():
-        if b_data["confs"]:
-            avg_conf = sum(b_data["confs"]) / len(b_data["confs"])
-            emp_acc = sum(b_data["correct"]) / len(b_data["correct"]) * 100.0
-            print(f"  Bin [{b_name}]: Count={len(b_data['confs']):2d} | Avg Confidence={avg_conf:.2f} | Empirical Accuracy={emp_acc:.1f}%")
-        else:
-            print(f"  Bin [{b_name}]: Count= 0 | (No samples)")
-    print("=" * 80)
-
-    summary = {
+    print(f"[{name}] Classification Acc: {class_acc:.1f}% | Action Acc: {action_acc:.1f}% | False-Kill: {false_kill_rate:.1f}% | Brier: {brier_score:.4f}")
+    return {
+        "name": name,
         "total_cases": total_cases,
         "classification_accuracy": round(class_acc, 2),
         "action_accuracy": round(action_acc, 2),
@@ -268,11 +223,46 @@ def run_evaluation_benchmark() -> dict[str, Any]:
         "results": results
     }
 
-    assert class_acc >= 90.0, f"Classification accuracy below 90% threshold: {class_acc}%"
-    assert action_acc >= 90.0, f"Action accuracy below 90% threshold: {action_acc}%"
-    assert false_kill_rate == 0.0, f"CRITICAL SAFETY VIOLATION: False kill rate is {false_kill_rate}% (must be 0%)"
 
-    return summary
+def run_evaluation_benchmark() -> dict[str, Any]:
+    print("=" * 80)
+    print("ASCP DIAGNOSTIC AGENT REGRESSION & ROBUSTNESS EVALUATION SUITE")
+    print("=" * 80)
+
+    # 1. Baseline Cases
+    baseline_cases = []
+    for test_case in BENCHMARK_DATASET:
+        scen_key = test_case.get("scenario_key")
+        raw_logs = SCENARIOS[scen_key]["logs"] if scen_key and scen_key in SCENARIOS else test_case.get("custom_logs", [])
+        baseline_cases.append((test_case, list(raw_logs)))
+
+    # 2. Perturbed Cases (injected benign noise)
+    perturbed_cases = []
+    for idx, test_case in enumerate(BENCHMARK_DATASET):
+        scen_key = test_case.get("scenario_key")
+        raw_logs = SCENARIOS[scen_key]["logs"] if scen_key and scen_key in SCENARIOS else test_case.get("custom_logs", [])
+        perturbed_logs = perturb(raw_logs, seed=idx + 42)
+        perturbed_cases.append((test_case, perturbed_logs))
+
+    base_res = _evaluate_subset("Baseline-Scenarios", baseline_cases)
+    pert_res = _evaluate_subset("Perturbed-Noise-Variants", perturbed_cases)
+
+    print("\n" + "=" * 80)
+    print("EVALUATION HARNESS METRICS SUMMARY (SEPARATE REPORTS)")
+    print("=" * 80)
+    print(f"Baseline Scenarios:      Class Acc={base_res['classification_accuracy']}% | Action Acc={base_res['action_accuracy']}% | Brier={base_res['brier_score']}")
+    print(f"Perturbed Noise Variants: Class Acc={pert_res['classification_accuracy']}% | Action Acc={pert_res['action_accuracy']}% | Brier={pert_res['brier_score']}")
+    print("=" * 80)
+
+    assert base_res["classification_accuracy"] >= 90.0
+    assert base_res["action_accuracy"] >= 90.0
+    assert base_res["false_kill_rate"] == 0.0
+    assert pert_res["false_kill_rate"] == 0.0
+
+    return {
+        "baseline": base_res,
+        "perturbed": pert_res,
+    }
 
 
 if __name__ == "__main__":

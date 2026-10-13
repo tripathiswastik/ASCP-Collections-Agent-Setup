@@ -21,6 +21,8 @@ Desktop.ini
 
 # Build artifacts & distributions
 dist/
+logs/
+.ruff_cache/
 *.zip
 *.tar.gz
 *.jsonl

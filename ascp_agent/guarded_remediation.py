@@ -14,7 +14,9 @@ Guarantees:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
+import os
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -87,17 +89,18 @@ class GuardedExecutionOutcome:
         return asdict(self)
 
 
+_FP_KEY = os.environ.get("ASCP_FINGERPRINT_KEY", "").encode() or os.urandom(32)
+
+
 def calculate_remediation_fingerprint(action: str, target: dict[str, Any]) -> str:
-    """Calculates deterministic SHA-256 fingerprint for action and target attributes."""
     components = [
-        str(action or "").upper(),
-        str(target.get("sid", target.get("target_sid", ""))),
-        str(target.get("serial_number", target.get("target_serial", target.get("serial", "")))),
-        str(target.get("object_name", target.get("target_object", target.get("table_name", "")))).upper(),
-        str(target.get("inst_id", target.get("instance_id", target.get("target_inst_id", "")))),
+        str(action).upper(),
+        str(target.get("sid", "")),
+        str(target.get("serial_number", "")),
+        str(target.get("object_name", target.get("table_name", ""))).upper(),
+        str(target.get("instance_id", "")),
     ]
-    raw = ":".join(components)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return hmac.new(_FP_KEY, ":".join(components).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 class GuardedRemediationLayer:
@@ -236,7 +239,7 @@ class GuardedRemediationLayer:
             raise RemediationGuardViolation(f"Approval failed: Proposal '{proposal_id}' has expired (TTL exceeded).")
 
         # Cryptographic Fingerprint Check
-        if submitted_fingerprint != prop.target_fingerprint:
+        if not hmac.compare_digest(submitted_fingerprint, prop.target_fingerprint):
             prop.approval_status = "REJECTED"
             raise RemediationGuardViolation(
                 "Security alert: Submitted fingerprint does not match proposal. Target has changed or request was forged!"
@@ -272,7 +275,9 @@ class GuardedRemediationLayer:
             target_sid = prop.target.get("sid", 0)
             target_serial = prop.target.get("serial_number", 0)
             lock_diag = LockDiagnosticsEngine()
-            is_active = lock_diag.verify_session_active(target_sid, target_serial)
+            is_active = lock_diag.verify_session_active(
+                target_sid, target_serial, inst_id=prop.target.get("inst_id")
+            )
             if not is_active:
                 # Blocker session self-terminated or lock cleared naturally while waiting for approval!
                 return GuardedExecutionOutcome(
@@ -332,11 +337,17 @@ class GuardedRemediationLayer:
                 dry_run=False,
             )
         else:
-            exec_res = RemediationResult(
+            return GuardedExecutionOutcome(
+                proposal_id=proposal_id,
                 action=act,
-                success=True,
-                command_executed="SELECT 1 FROM DUAL",
-                message=f"Non-destructive or manual advisory action '{act}' noted.",
+                target=t,
+                executed=False,
+                success=False,
+                aborted_early=True,
+                abort_reason=f"No executor wired for '{act}'; advisory only.",
+                pre_recheck_passed=True,
+                post_verification_passed=False,
+                verification_details="Nothing was run.",
             )
 
         # Post-Execution Recovery Verification
@@ -356,7 +367,14 @@ class GuardedRemediationLayer:
                 post_verified = False
                 post_message = f"Post-execution verification check failed: {v_err}"
 
-        prop.approval_status = "EXECUTED"
+            if prop.action == "KILL_SESSION" and not self.rem_engine.simulated:
+                still_there = LockDiagnosticsEngine().verify_session_active(
+                    t.get("sid", 0), t.get("serial_number", 0), inst_id=t.get("inst_id")
+                )
+                post_verified = still_there is None
+                post_message = "Session no longer active." if post_verified else "Session still active after kill."
+
+        prop.approval_status = "EXECUTED" if exec_res.success else "FAILED"
 
         return GuardedExecutionOutcome(
             proposal_id=proposal_id,

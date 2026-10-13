@@ -12,6 +12,7 @@ import json
 import logging
 import mimetypes
 import os
+import secrets as std_secrets
 import socketserver
 import sys
 import threading
@@ -32,7 +33,7 @@ from ascp_agent.graph import create_ascp_diagnostic_graph
 from ascp_agent.lock_engine import LOCK_MODE_MAPPING, LockDiagnosticsEngine
 from ascp_agent.metrics import GLOBAL_METRICS
 from ascp_agent.pipeline_monitor import PipelineMonitor
-from ascp_agent.secrets import GLOBAL_SECRET_MANAGER
+from ascp_agent.secret_store import GLOBAL_SECRET_MANAGER
 from ascp_agent.simulator import SCENARIOS
 from ascp_agent.state import Command
 
@@ -41,7 +42,7 @@ PUBLIC_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = PUBLIC_DIR
 
 # Initial JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
-OPERATOR_TOKENS: dict[str, str] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
+OPERATOR_TOKENS: dict[str, Any] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
 
 # Concurrency & request safety limits
 MAX_BODY_BYTES = 64 * 1024
@@ -51,8 +52,16 @@ _INVOKE_LOCK = threading.Lock()
 _SERVER_LOCK = threading.RLock()
 current_scenario_key = "ora_00054_mode6"
 
-# Set of used approval IDs to prevent replay attacks
-_USED_APPROVAL_IDS: set = set()
+# Dict of used approval IDs -> expiry unix timestamp to prevent replay attacks and bound memory
+_USED_APPROVAL_IDS: dict[str, float] = {}  # approval_id -> expiry (unix)
+
+
+def _remember_approval(appr_id: str, expires_at: float) -> None:
+    now = time.time()
+    with _SERVER_LOCK:
+        for old_id in [k for k, exp in _USED_APPROVAL_IDS.items() if exp < now]:
+            del _USED_APPROVAL_IDS[old_id]
+        _USED_APPROVAL_IDS[appr_id] = expires_at
 
 # Multi-session registry supporting concurrent / simultaneous diagnostic sessions
 MAX_SESSIONS = 50
@@ -177,6 +186,26 @@ def _extract_api_token(headers: Any) -> str | None:
     return None
 
 
+def resolve_operator(supplied: str, active_tokens: dict[str, Any]) -> Operator | None:
+    """Map a supplied token to an Operator. Unknown or malformed entries grant nothing."""
+    supplied_bytes = supplied.encode("utf-8")
+    for token, entry in active_tokens.items():
+        if not hmac.compare_digest(supplied_bytes, token.encode("utf-8")):
+            continue
+        if isinstance(entry, dict):
+            user = str(entry.get("user", "")).strip()
+            role = entry.get("role", "viewer")
+        elif isinstance(entry, str):
+            user = entry.strip()
+            role = "viewer"
+        else:
+            return None
+        if not user or role not in ("viewer", "approver"):
+            return None
+        return Operator(user, role=role)
+    return None
+
+
 class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server):
         super().__init__(request, client_address, server)
@@ -186,28 +215,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         supplied = _extract_api_token(self.headers)
         if not supplied:
             return None
-        supplied_bytes = supplied.encode("utf-8")
-
-        # Dynamically merge live module OPERATOR_TOKENS and secret manager tokens at request time
         active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
         active_tokens.update(OPERATOR_TOKENS)
-
-        for token, val in active_tokens.items():
-            if hmac.compare_digest(supplied_bytes, token.encode("utf-8")):
-                if isinstance(val, dict):
-                    user = val.get("user", "operator")
-                    role = val.get("role", "approver")
-                elif isinstance(val, str):
-                    user = val
-                    role = "viewer" if ("viewer" in val.lower() or "readonly" in val.lower()) else "approver"
-                else:
-                    user = str(val)
-                    role = "approver"
-                return Operator(user, role=role)
-
-        masked = (supplied[:4] + "..." + supplied[-4:]) if len(supplied) > 8 else "*****"
-        logger.debug("Authentication failed for token %s; known token count=%d", masked, len(active_tokens))
-        return None
+        return resolve_operator(supplied, active_tokens)
 
     def _read_json_body(self) -> dict[str, Any] | None:
         """Return the parsed JSON object, or None if the body is invalid or too large."""
@@ -542,7 +552,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
                     # Expiration check
                     if time.time() > pending.get("expires_at", 0):
-                        _USED_APPROVAL_IDS.add(appr_id)
+                        _remember_approval(appr_id, pending.get("expires_at", time.time() + 3600))
                         self._send_json({
                             "error": f"Approval '{appr_id}' has expired (TTL exceeded at {pending.get('expires_at_iso')})"
                         }, 400)
@@ -573,7 +583,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         return
 
                     # Mark approval as used to prevent replay attacks
-                    _USED_APPROVAL_IDS.add(appr_id)
+                    _remember_approval(appr_id, pending.get("expires_at", time.time() + 3600))
                     session_info["pending_approval"] = None
 
                     notes = str(req_data.get("notes", f"Decision rendered by {operator}"))[:500]
@@ -662,7 +672,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 def run_server(port: int = 8085, host: str = "127.0.0.1"):
     active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
     active_tokens.update(OPERATOR_TOKENS)
-    env_mode = os.environ.get("ASCP_ENV", "development").lower()
+    env_mode = os.environ.get("ASCP_ENV", "production").lower()
     is_loopback = host in ("127.0.0.1", "localhost", "::1")
     is_dev = env_mode in ("development", "dev", "local")
 
@@ -673,10 +683,10 @@ def run_server(port: int = 8085, host: str = "127.0.0.1"):
                 f"non-local or production environment (ASCP_ENV='{env_mode}', host='{host}'). "
                 f"Refusing to generate or fallback to dev tokens."
             )
-        dev_token = os.environ.get("ASCP_DEV_TOKEN", "dev-operator-secret-token")
+        dev_token = os.environ.get("ASCP_DEV_TOKEN") or std_secrets.token_urlsafe(32)
         logger.warning("SECURITY WARNING: ASCP_OPERATOR_TOKENS not specified. Using development token.")
         print("[!] SECURITY WARNING: ASCP_OPERATOR_TOKENS not specified in environment.")
-        print(f"[+] Initialized local dev operator token on loopback: {dev_token}")
+        print(f"[+] Dev operator token (this run only): {dev_token}")
         OPERATOR_TOKENS[dev_token] = {"user": "local-developer", "role": "approver"}
         active_tokens[dev_token] = {"user": "local-developer", "role": "approver"}
     with ThreadedASCPDiagnosticServer((host, port), ASCPDiagnosticHandler) as httpd:
