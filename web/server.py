@@ -92,18 +92,26 @@ def _prune_expired_sessions() -> None:
                 _SESSIONS.pop(sid, None)
 
 
-ALLOWED_STATIC_EXTENSIONS = {
-    ".html", ".css", ".js", ".json", ".svg", ".png",
-    ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".map", ".txt"
-}
-BLOCKED_STATIC_FILES = {
-    "server.py", "__init__.py", "remediation_audit.jsonl"
+ALLOWED_STATIC_FILES = {
+    "index.html": "text/html; charset=utf-8",
+    "style.css": "text/css; charset=utf-8",
+    "app.js": "application/javascript; charset=utf-8",
+    "favicon.ico": "image/x-icon",
 }
 
 
 def resolve_static_path(url_path: str) -> str | None:
-    """Return an absolute file path inside PUBLIC_DIR, or None if not allowed."""
-    relative = urllib.parse.unquote(url_path).lstrip("/") or "index.html"
+    """Return an absolute file path inside PUBLIC_DIR, or None if not allowed.
+    Strictly enforces an explicit allowlist of authorized frontend static assets.
+    Backend code, scripts, configurations, and internal audit files are never served.
+    """
+    cleaned = urllib.parse.unquote(url_path).strip().split("?")[0].split("#")[0]
+    relative = cleaned.lstrip("/") or "index.html"
+
+    # Enforce strict allowlist matching
+    if relative not in ALLOWED_STATIC_FILES:
+        return None
+
     public_root = os.path.realpath(PUBLIC_DIR)
     candidate = os.path.realpath(os.path.join(public_root, relative))
     try:
@@ -111,15 +119,6 @@ def resolve_static_path(url_path: str) -> str | None:
     except ValueError:  # different drives on Windows
         return None
     if not inside or not os.path.isfile(candidate):
-        return None
-
-    filename = os.path.basename(candidate).lower()
-    ext = os.path.splitext(candidate)[1].lower()
-
-    # Block sensitive server files, audit logs, python scripts, and non-whitelisted extensions
-    if filename.startswith(".") or filename in BLOCKED_STATIC_FILES or ext in (".py", ".pyc", ".jsonl"):
-        return None
-    if ext not in ALLOWED_STATIC_EXTENSIONS:
         return None
 
     return candidate
@@ -152,7 +151,9 @@ def record_audit_event(event: dict[str, Any]) -> dict[str, Any]:
     with _AUDIT_LOG_LOCK:
         _AUDIT_EVENTS.append(entry)
         try:
-            log_path = os.path.join(PUBLIC_DIR, "remediation_audit.jsonl")
+            audit_dir = os.path.join(BASE_DIR, "logs")
+            os.makedirs(audit_dir, exist_ok=True)
+            log_path = os.path.join(audit_dir, "remediation_audit.jsonl")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
         except OSError as exc:
@@ -224,27 +225,58 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         return data if isinstance(data, dict) else None
 
     def _add_cors_headers(self):
-        """Inject configurable Cross-Origin Resource Sharing headers."""
-        origin = self.headers.get("Origin") or "*"
-        self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token, Authorization")
-        self.send_header("Access-Control-Max-Age", "86400")
+        """Inject configurable Cross-Origin Resource Sharing headers.
+        Restricts cross-origin access to explicitly permitted origins in production,
+        while allowing local dev origins (localhost / 127.0.0.1) by default.
+        """
+        origin = self.headers.get("Origin")
+        allowed_origins_env = os.environ.get("ASCP_ALLOWED_ORIGINS", "").strip()
+
+        if allowed_origins_env:
+            allowed = {o.strip() for o in allowed_origins_env.split(",") if o.strip()}
+            effective_origin = origin if origin in allowed else None
+        else:
+            # Default development behavior: permit loopback callers or wildcard for local tools
+            if origin:
+                parsed = urllib.parse.urlparse(origin)
+                if parsed.hostname in ("127.0.0.1", "localhost", "::1"):
+                    effective_origin = origin
+                else:
+                    effective_origin = None
+            else:
+                effective_origin = "*"
+
+        if effective_origin:
+            self.send_header("Access-Control-Allow-Origin", effective_origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token, Authorization")
+            self.send_header("Access-Control-Max-Age", "86400")
+            if effective_origin != "*":
+                self.send_header("Vary", "Origin")
 
     def _add_security_headers(self, is_html: bool = False):
         """Inject defense-in-depth security headers on all HTTP responses."""
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         if is_html:
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; "
-                "script-src 'self' 'unsafe-inline'; "
+                "script-src 'self'; "
                 "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
                 "font-src 'self' https://fonts.gstatic.com; "
                 "img-src 'self' data:; "
-                "connect-src 'self' http://127.0.0.1:* http://localhost:*;"
+                "connect-src 'self' http://127.0.0.1:* http://localhost:*; "
+                "frame-ancestors 'none'; "
+                "base-uri 'self'; "
+                "form-action 'self';"
+            )
+        else:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; frame-ancestors 'none';"
             )
 
     def _send_json(self, data: Any, status: int = 200):
@@ -627,27 +659,32 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"error": "Endpoint not found"}, 404)
 
 
-def run_server(port: int = 8085):
+def run_server(port: int = 8085, host: str = "127.0.0.1"):
     active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
     active_tokens.update(OPERATOR_TOKENS)
     env_mode = os.environ.get("ASCP_ENV", "development").lower()
+    is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    is_dev = env_mode in ("development", "dev", "local")
+
     if not active_tokens:
-        if env_mode in ("production", "prod"):
+        if not is_dev or not is_loopback:
             raise RuntimeError(
-                "CRITICAL SECURITY CONFIGURATION ERROR: ASCP_OPERATOR_TOKENS must be set in production mode. "
-                "Refusing to generate or fallback to dev tokens."
+                f"CRITICAL SECURITY CONFIGURATION ERROR: ASCP_OPERATOR_TOKENS must be set when running in "
+                f"non-local or production environment (ASCP_ENV='{env_mode}', host='{host}'). "
+                f"Refusing to generate or fallback to dev tokens."
             )
         dev_token = os.environ.get("ASCP_DEV_TOKEN", "dev-operator-secret-token")
         logger.warning("SECURITY WARNING: ASCP_OPERATOR_TOKENS not specified. Using development token.")
         print("[!] SECURITY WARNING: ASCP_OPERATOR_TOKENS not specified in environment.")
-        print(f"[+] Initialized local dev operator token: {dev_token}")
+        print(f"[+] Initialized local dev operator token on loopback: {dev_token}")
         OPERATOR_TOKENS[dev_token] = {"user": "local-developer", "role": "approver"}
         active_tokens[dev_token] = {"user": "local-developer", "role": "approver"}
-    with ThreadedASCPDiagnosticServer(("127.0.0.1", port), ASCPDiagnosticHandler) as httpd:
-        print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://127.0.0.1:{port}")
+    with ThreadedASCPDiagnosticServer((host, port), ASCPDiagnosticHandler) as httpd:
+        print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://{host}:{port}")
         httpd.serve_forever()
 
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("PORT", "8085"))
-    run_server(port)
+    host = os.getenv("HOST", "127.0.0.1")
+    run_server(port, host)

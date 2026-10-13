@@ -7,8 +7,9 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // API Security Configuration
-  // Operator token is stored per browser session in sessionStorage, defaulting to local dev token.
-  let API_TOKEN = sessionStorage.getItem('ascpToken') || 'dev-operator-secret-token';
+  // Operator token is kept per session; non-local environments strictly require operator input.
+  const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  let API_TOKEN = sessionStorage.getItem('ascpToken') || (isLocalDev ? 'dev-operator-secret-token' : '');
 
   const tokenStatusPill = document.getElementById('tokenStatusPill');
   const tokenBadgeLabel = document.getElementById('tokenBadgeLabel');
@@ -29,11 +30,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Initialize initial token badge state
+  if (!API_TOKEN) {
+    updateTokenBadge('Token: Not Set', true);
+  } else {
+    updateTokenBadge('Token: Active', false);
+  }
+
   function openTokenModal(isPromptForAuth = false) {
     if (!tokenModal) return;
     if (tokenInput) {
       tokenInput.value = API_TOKEN;
-      tokenInput.placeholder = isPromptForAuth ? 'Authentication required. Enter valid token' : 'e.g. dev-operator-secret-token';
+      tokenInput.placeholder = isPromptForAuth ? 'Authentication required. Enter operator token' : (isLocalDev ? 'e.g. dev-operator-secret-token' : 'Enter assigned operator token');
     }
     tokenModal.classList.remove('hidden');
     if (tokenInput) tokenInput.focus();
@@ -59,6 +67,12 @@ document.addEventListener('DOMContentLoaded', () => {
         API_TOKEN = val;
         sessionStorage.setItem('ascpToken', API_TOKEN);
         updateTokenBadge('Token: Active', false);
+        addConsoleLog('SECURITY', 'Operator authentication token updated and applied.');
+      } else {
+        API_TOKEN = '';
+        sessionStorage.removeItem('ascpToken');
+        updateTokenBadge('Token: Not Set', true);
+        addConsoleLog('SECURITY', 'Operator authentication token cleared.');
       }
       closeTokenModal();
       refreshTelemetry();
@@ -69,6 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const headers = options.headers ? { ...options.headers } : {};
     if (API_TOKEN) {
       headers['X-API-Token'] = API_TOKEN;
+      headers['Authorization'] = `Bearer ${API_TOKEN}`;
     }
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {
