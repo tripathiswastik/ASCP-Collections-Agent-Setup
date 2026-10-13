@@ -42,7 +42,7 @@ def get_live_oracle_config() -> OracleConfig | None:
 def is_oracle_live_available() -> bool:
     """Probes if a live Oracle database is reachable."""
     try:
-        import oracledb
+        import oracledb  # type: ignore
     except ImportError:
         return False
 
@@ -74,7 +74,7 @@ class TestOracleLiveIntegration(unittest.TestCase):
             raise unittest.SkipTest("Live Oracle database not accessible (skip for non-container CI runs)")
 
         cls.config = get_live_oracle_config()
-        import oracledb
+        import oracledb  # type: ignore
         cls.oracledb = oracledb
 
         # Setup dedicated test table

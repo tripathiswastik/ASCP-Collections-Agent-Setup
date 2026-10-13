@@ -27,6 +27,9 @@ class OracleConfig:
     use_simulation: bool = field(
         default_factory=lambda: os.getenv("ORACLE_SIMULATION", "true").lower() == "true"
     )
+    min_pool_size: int = 1
+    max_pool_size: int = 5
+    pool_increment: int = 1
     # ASCP Collection Profile Options
     source_setup_required: str = "Yes"                  # MSC: Source Setup Required
     purge_stg_tbl_cntrl: str = "Yes"                     # MSC: Purge Stg Tbl Cntrl

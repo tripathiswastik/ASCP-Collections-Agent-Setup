@@ -130,11 +130,17 @@ class LockTelemetryItem:
 class LockDiagnosticsEngine:
     """Interrogates Oracle dynamic performance views to uncover root blocker sessions."""
 
-    def __init__(self, connection_config: Any | None = None, simulated_scenario: str | None = "ora_00054_mode6"):
-        self.config = connection_config
+    def __init__(
+        self,
+        connection_config: Any | None = None,
+        simulated_scenario: str | None = "ora_00054_mode6",
+        pool: OracleConnectionPool | None = None,
+        config: Any | None = None,
+    ):
+        self.config = config or connection_config
         self.simulated_scenario = simulated_scenario
-        cfg = connection_config if hasattr(connection_config, "host") else None
-        self.pool: OracleConnectionPool = get_oracle_pool(cfg)
+        cfg = self.config if hasattr(self.config, "host") else None
+        self.pool: OracleConnectionPool = pool if pool is not None else get_oracle_pool(cfg)
         self._cached_telemetry: list[dict[str, Any]] | None = None
         self._cache_timestamp: float = 0.0
         self.cache_ttl: float = 5.0
