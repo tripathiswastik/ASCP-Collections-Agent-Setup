@@ -56,9 +56,13 @@ def validate_session_numeric(val: Any, field_name: str = "sid") -> int:
         raise ValueError(f"{field_name} exceeds maximum Oracle serial limit (10,000,000), got {val}")
     return val
 
-def _utc_now() -> str:
-    """Returns standardized ISO-8601 UTC timestamp."""
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def format_utc_timestamp(ts: float | None = None) -> str:
+    """Returns standardized ISO-8601 UTC timestamp (%Y-%m-%dT%H:%M:%SZ)."""
+    if ts is None:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+_utc_now = format_utc_timestamp
 
 @dataclass
 class RemediationResult:

@@ -27,7 +27,7 @@ from ascp_agent.diagnostic_tools import (
     validate_remediation_preconditions,
 )
 from ascp_agent.lock_engine import LockDiagnosticsEngine
-from ascp_agent.remediation import RemediationEngine, RemediationResult
+from ascp_agent.remediation import RemediationEngine, RemediationResult, format_utc_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +62,8 @@ class RemediationProposal:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        d["created_at_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.created_at_unix))
-        d["expires_at_iso"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.expires_at_unix))
+        d["created_at_iso"] = format_utc_timestamp(self.created_at_unix)
+        d["expires_at_iso"] = format_utc_timestamp(self.expires_at_unix)
         return d
 
 
@@ -81,7 +81,7 @@ class GuardedExecutionOutcome:
     execution_result: dict[str, Any] = field(default_factory=dict)
     post_verification_passed: bool = False
     verification_details: str = ""
-    timestamp_utc: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    timestamp_utc: str = field(default_factory=format_utc_timestamp)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -90,11 +90,11 @@ class GuardedExecutionOutcome:
 def calculate_remediation_fingerprint(action: str, target: dict[str, Any]) -> str:
     """Calculates deterministic SHA-256 fingerprint for action and target attributes."""
     components = [
-        str(action).upper(),
-        str(target.get("sid", "")),
-        str(target.get("serial_number", "")),
-        str(target.get("object_name", target.get("table_name", ""))).upper(),
-        str(target.get("instance_id", "")),
+        str(action or "").upper(),
+        str(target.get("sid", target.get("target_sid", ""))),
+        str(target.get("serial_number", target.get("target_serial", target.get("serial", "")))),
+        str(target.get("object_name", target.get("target_object", target.get("table_name", "")))).upper(),
+        str(target.get("inst_id", target.get("instance_id", target.get("target_inst_id", "")))),
     ]
     raw = ":".join(components)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

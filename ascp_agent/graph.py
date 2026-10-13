@@ -6,7 +6,6 @@ and time-travel state debugging.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -18,6 +17,7 @@ from typing import Any
 
 from ascp_agent.drain_parser import DrainLogParser
 from ascp_agent.evidence_engine import EvidenceAnalysisEngine
+from ascp_agent.guarded_remediation import calculate_remediation_fingerprint
 from ascp_agent.guardrails import EnterpriseGuardrails
 from ascp_agent.hitl_governance import HITLGovernanceEngine
 from ascp_agent.itsm_service_now import ServiceNowClient
@@ -27,6 +27,7 @@ from ascp_agent.remediation import (
     format_kill_session_sql,
     format_purge_staging_sql,
     format_recovery_command_block,
+    format_utc_timestamp,
 )
 from ascp_agent.schema_validator import check_validation_routing, validate_schema_node
 from ascp_agent.state import (
@@ -68,7 +69,7 @@ class CheckpointRecord:
         self.step_index = step_index
         self.state = _clone_state_snapshot(state)
         self.next_node = next_node
-        self.timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.timestamp = format_utc_timestamp()
 
 class MemorySaver:
     """In-memory checkpointer supporting state snapshots and time-travel inspection with bounded memory."""
@@ -948,9 +949,15 @@ def hitl_gate_node(state: AgentState) -> dict:
     target_serial = blocker.get("serial_number")
     target_obj = blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS"))
     target_inst = blocker.get("inst_id")
-    approval_fingerprint = hashlib.sha256(
-        f"{action}:{target_sid}:{target_serial}:{target_obj}:{target_inst}".encode()
-    ).hexdigest()
+    approval_fingerprint = calculate_remediation_fingerprint(
+        action or "",
+        {
+            "sid": target_sid,
+            "serial_number": target_serial,
+            "object_name": target_obj,
+            "inst_id": target_inst,
+        }
+    )
 
     # If approval is required and neither approved nor human_response evaluated yet:
     if requires_approval and not state.get("remediation_approved") and state.get("human_response") is None:
@@ -969,7 +976,7 @@ def hitl_gate_node(state: AgentState) -> dict:
             "approval_fingerprint": approval_fingerprint,
             "created_at": now_ts,
             "expires_at": expires_ts,
-            "expires_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_ts)),
+            "expires_at_iso": format_utc_timestamp(expires_ts),
             "action": action,
             "risk_tier": risk,
             "confidence_score": confidence,

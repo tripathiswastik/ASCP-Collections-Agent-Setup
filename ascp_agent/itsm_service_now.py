@@ -12,6 +12,12 @@ from collections import deque
 from typing import Any
 
 from ascp_agent.config import ServiceNowConfig
+from ascp_agent.remediation import (
+    format_kill_session_sql,
+    format_purge_staging_sql,
+    format_registry_reset_sql,
+    format_utc_timestamp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +95,17 @@ class ServiceNowClient:
         holding_sql_text = root.get("current_sql_text", "N/A")
         lock_hierarchy = lock_hierarchy or ([root] if root else [])
 
+        kill_cmd = (
+            format_kill_session_sql(root_sid, root["serial_number"], inst_id=root.get("inst_id"))
+            if root_sid and root.get("serial_number")
+            else None
+        )
         # Build one-click DBA remediation playbook
         playbook = {
             "primary_action": recommended_remediation,
-            "session_kill_command": f"ALTER SYSTEM KILL SESSION '{root_sid},{root.get('serial_number')}' IMMEDIATE" if root_sid else None,
-            "staging_purge_command": f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {instance_id}, p_validation => 'N'); END;",
-            "registry_normalization_sql": f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id}; COMMIT;",
+            "session_kill_command": kill_cmd,
+            "staging_purge_command": format_purge_staging_sql(instance_id=instance_id, validation="N"),
+            "registry_normalization_sql": format_registry_reset_sql(instance_id=instance_id, status=0),
             "verification_query": "SELECT sid, serial#, locked_mode FROM v$locked_object lo JOIN dba_objects do ON lo.object_id = do.object_id WHERE do.object_name LIKE 'MSC_ST_%';"
         }
 
@@ -173,7 +184,7 @@ class ServiceNowClient:
                 "assignment_group": self.config.assignment_group,
                 "endpoint": f"{self.config.instance_url}{self.config.table_api_path}",
                 "payload": payload,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                "timestamp": format_utc_timestamp()
             }
             self.created_incidents.append(result)
             return result
@@ -188,7 +199,7 @@ class ServiceNowClient:
             "assignment_group": self.config.assignment_group,
             "endpoint": f"{self.config.instance_url}{self.config.table_api_path}",
             "payload": payload,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            "timestamp": format_utc_timestamp()
         }
         if corr_id:
             self._active_by_correlation_id[corr_id] = result
@@ -244,7 +255,7 @@ class ServiceNowClient:
                                 "sys_id": existing_sys_id,
                                 "deduplicated": True,
                                 "payload": payload,
-                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                                "timestamp": format_utc_timestamp()
                             }
                             self.created_incidents.append(res)
                             return res
@@ -272,7 +283,7 @@ class ServiceNowClient:
                     "sys_id": data.get("sys_id"),
                     "deduplicated": False,
                     "payload": payload,
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    "timestamp": format_utc_timestamp()
                 }
                 self.created_incidents.append(result)
                 return result
@@ -302,5 +313,5 @@ class ServiceNowClient:
             "status": "FAILED",
             "error": last_error,
             "payload": payload,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            "timestamp": format_utc_timestamp()
         }
