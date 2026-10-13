@@ -114,6 +114,30 @@ GOVERNANCE_RULES: dict[str, HITLGovernanceRule] = {
         requires_mandatory_approval=True,
         requires_dry_run_validation=False,
         description="Flushes SGA shared pool heap to remediate ORA-04031 library cache fragmentation."
+    ),
+    "PURGE_PIPE": HITLGovernanceRule(
+        risk_tier="MEDIUM",
+        action_type="DBMS_PIPE Buffer Purge",
+        target_object="V$DB_PIPES",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=False,
+        description="Clears orphan worker pipes and resets buffer allocations."
+    ),
+    "REFRESH_SNAPSHOT": HITLGovernanceRule(
+        risk_tier="LOW",
+        action_type="Materialized View Fast Refresh",
+        target_object="MLOG$_*",
+        requires_mandatory_approval=False,
+        requires_dry_run_validation=False,
+        description="Re-invokes DBMS_SNAPSHOT.REFRESH in fast incremental mode."
+    ),
+    "ALIGN_INDEXES": HITLGovernanceRule(
+        risk_tier="MEDIUM",
+        action_type="Partition Index Realignment",
+        target_object="MSC_* Partitions",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=True,
+        description="Realigns index definitions and constraints across staging and ODS structures."
     )
 }
 

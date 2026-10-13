@@ -803,6 +803,10 @@ ACTION_EXECUTORS: dict[str, Callable[[RemediationEngine, AgentState, bool], Any]
         pipe_name=f"MSC_PIPE_{st.get('context', {}).get('instance_code', 'PRD1')}",
         dry_run=dry
     ),
+    "PURGE_PIPE": lambda eng, st, dry: eng.execute_reset_pipe(
+        pipe_name=f"MSC_PIPE_{st.get('context', {}).get('instance_code', 'PRD1')}",
+        dry_run=dry
+    ),
     "ALIGN_INDEXES": lambda eng, st, dry: eng.execute_align_indexes(
         table_name=st.get("context", {}).get("target_staging_table", "MSC_DEMANDS"),
         dry_run=dry
@@ -817,6 +821,11 @@ ACTION_EXECUTORS: dict[str, Callable[[RemediationEngine, AgentState, bool], Any]
         dry_run=dry
     ),
     "RERUN_SNAPSHOT_FAST": lambda eng, st, dry: eng.execute_snapshot_refresh(
+        mview_name=st.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES"),
+        mode="F",
+        dry_run=dry
+    ),
+    "REFRESH_SNAPSHOT": lambda eng, st, dry: eng.execute_snapshot_refresh(
         mview_name=st.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES"),
         mode="F",
         dry_run=dry
