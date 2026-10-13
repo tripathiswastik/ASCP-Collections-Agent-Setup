@@ -150,5 +150,28 @@ class TestLangGraphAgent(unittest.TestCase):
         self.assertIn("remaining_steps", state)
         self.assertLess(state["remaining_steps"], 50)
 
+    def test_parse_worker_log_node_preserves_unicode_metadata_for_empty_log(self):
+        """Boundary coverage: An empty worker log artifact must not discard identifying Unicode metadata."""
+        from ascp_agent.graph import parse_worker_log_node
+
+        result = parse_worker_log_node(
+            {
+                "worker_id": "作業者-Δ",
+                "table": "需要_表",
+                "log_content": "",
+            }
+        )
+
+        self.assertEqual(result["log_templates"], [])
+        self.assertEqual(
+            result["intermediate_query_results"],
+            [{"worker_id": "作業者-Δ", "table": "需要_表", "errors": []}]
+        )
+        self.assertEqual(
+            result["audit_trail"],
+            [{"event": "PARALLEL_WORKER_PARSED", "worker_id": "作業者-Δ", "table": "需要_表"}]
+        )
+
 if __name__ == "__main__":
     unittest.main()
+
