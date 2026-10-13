@@ -133,7 +133,7 @@ class LockDiagnosticsEngine:
     def __init__(
         self,
         connection_config: Any | None = None,
-        simulated_scenario: str | None = "ora_00054_mode6",
+        simulated_scenario: str | None = None,
         pool: OracleConnectionPool | None = None,
         config: Any | None = None,
     ):
@@ -209,6 +209,9 @@ class LockDiagnosticsEngine:
             except Exception as exc:
                 logger.exception("Live lock query failed")
                 raise LockQueryError("Live Oracle lock query failed") from exc
+        if not self.simulated_scenario:
+            logger.info("LockDiagnosticsEngine: simulation mode with no scenario specified. Returning empty telemetry.")
+            return []
         return self._generate_simulated_lock_telemetry()
 
     def execute_hierarchical_lock_query(self, bypass_cache: bool = False) -> list[dict[str, Any]]:
@@ -226,6 +229,12 @@ class LockDiagnosticsEngine:
             except Exception as exc:
                 logger.exception("Live lock query failed")
                 raise LockQueryError("Live Oracle lock query failed") from exc
+
+        if not self.simulated_scenario:
+            logger.info("LockDiagnosticsEngine: simulation mode with no scenario specified. Returning empty telemetry.")
+            self._cached_telemetry = []
+            self._cache_timestamp = now
+            return []
 
         res = self._generate_simulated_lock_telemetry()
         self._cached_telemetry = res

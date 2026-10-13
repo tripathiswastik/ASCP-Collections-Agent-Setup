@@ -181,6 +181,67 @@ def test_query_failure_is_not_masked_as_simulation(monkeypatch=None):
             pool.get_connection = orig_get_conn
 
 
+def test_pool_close_safe_in_running_event_loop():
+    import asyncio
+
+    from ascp_agent.db import OracleConnectionPool
+
+    class _FakeAsyncPool:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    pool = OracleConnectionPool()
+    fake_pool = _FakeAsyncPool()
+    pool._async_pool = fake_pool
+
+    async def _runner():
+        # Calling pool.close() while inside a running event loop must not crash
+        pool.close()
+
+    asyncio.run(_runner())
+    assert pool._async_pool is None
+
+
+def test_live_oracle_fails_closed_without_driver():
+    from ascp_agent.config import OracleConfig
+    from ascp_agent.db import OracleConnectionPool
+
+    cfg = OracleConfig(
+        host="live-db.corp.internal",
+        password="secret_password",
+        use_simulation=False,
+    )
+    pool = OracleConnectionPool(cfg)
+    pool._driver_loaded = False
+    assert pool.is_simulation is False
+
+    with pytest.raises(RuntimeError):
+        pool.initialize_sync_pool()
+
+
+def test_lock_engine_no_synthetic_telemetry_without_explicit_scenario():
+    from ascp_agent.lock_engine import LockDiagnosticsEngine
+
+    engine = LockDiagnosticsEngine()
+    assert engine.simulated_scenario is None
+    telemetry = engine.execute_hierarchical_lock_query()
+    assert telemetry == []
+
+
+def test_kill_session_fails_closed_when_blocker_absent():
+    from ascp_agent.graph import _execute_kill_session_action
+    from ascp_agent.remediation import RemediationEngine
+    from ascp_agent.state import DiagnosticState
+
+    eng = RemediationEngine()
+    empty_state = DiagnosticState({"lock_telemetry": [], "context": {}})
+    with pytest.raises(ValueError):
+        _execute_kill_session_action(eng, empty_state, dry=True)
+
+
 class TestSecurityFixes(unittest.TestCase):
     def test_kill_sql_normal_input(self):
         test_kill_sql_normal_input()
@@ -229,3 +290,16 @@ class TestSecurityFixes(unittest.TestCase):
 
     def test_query_failure_is_not_masked_as_simulation(self):
         test_query_failure_is_not_masked_as_simulation()
+
+    def test_pool_close_safe_in_running_event_loop(self):
+        test_pool_close_safe_in_running_event_loop()
+
+    def test_live_oracle_fails_closed_without_driver(self):
+        test_live_oracle_fails_closed_without_driver()
+
+    def test_lock_engine_no_synthetic_telemetry_without_explicit_scenario(self):
+        test_lock_engine_no_synthetic_telemetry_without_explicit_scenario()
+
+    def test_kill_session_fails_closed_when_blocker_absent(self):
+        test_kill_session_fails_closed_when_blocker_absent()
+

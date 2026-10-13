@@ -414,8 +414,10 @@ class CompiledStateGraph:
             else:
                 next_node = END
 
-            # 6. Persist checkpoint
-            self.checkpointer.save(thread_id, state, next_node=next_node)
+            # 6. Persist checkpoint (configurable policy; terminal nodes and interrupts always persist)
+            checkpoint_policy = config.get("checkpoint_policy", "all")
+            if checkpoint_policy == "all" or next_node == END:
+                self.checkpointer.save(thread_id, state, next_node=next_node)
             current_node = next_node
 
         state["completed"] = True
@@ -641,15 +643,26 @@ def classification_node(state: AgentState) -> dict:
 def oracle_lock_node(state: AgentState) -> dict:
     """Step 3: Real-Time Hierarchical Oracle Lock Analysis via python-oracledb & V$ views."""
     domain = state.get("failure_domain")
-    if domain == "DEADLOCK_CONCURRENCY":
-        scenario = "ora_00060_deadlock"
-    elif domain == "DATABASE_LOCK":
-        scenario = "ora_00054_mode6"
+    ctx = state.get("context", {})
+    from ascp_agent.config import DEFAULT_CONFIG
+    use_sim = ctx.get("use_simulation") if "use_simulation" in ctx else DEFAULT_CONFIG.oracle.use_simulation
+
+    if use_sim:
+        if domain == "DEADLOCK_CONCURRENCY":
+            scenario = "ora_00060_deadlock"
+        elif domain == "DATABASE_LOCK":
+            scenario = "ora_00054_mode6"
+        else:
+            scenario = "no_locks"
     else:
-        scenario = "no_locks"
+        scenario = None
 
     engine = LockDiagnosticsEngine(simulated_scenario=scenario)
-    telemetry = engine.execute_hierarchical_lock_query()
+    try:
+        telemetry = engine.execute_hierarchical_lock_query()
+    except Exception as exc:
+        logger.error("Live Oracle lock diagnostics query failed: %s", exc)
+        raise
     root_blocker = engine.isolate_root_blocker(telemetry)
 
     root_found = root_blocker is not None
@@ -748,13 +761,25 @@ def rca_hypothesis_node(state: AgentState) -> dict:
     }
 
 def _execute_kill_session_action(eng: RemediationEngine, st: AgentState, dry: bool) -> Any:
-    """Precomputes root blocker lock telemetry to avoid repeated generator scans."""
+    """Precomputes root blocker lock telemetry to avoid repeated generator scans.
+    Strictly refuses to execute if no valid blocker session is identified in telemetry or context.
+    """
     telemetry = st.get("lock_telemetry", [])
     root = next((x for x in telemetry if x.get("lock_depth") == 1), {})
     ctx = st.get("context", {})
+
+    target_sid = root.get("sid") or ctx.get("target_sid")
+    target_serial = root.get("serial_number") or ctx.get("target_serial")
+
+    if target_sid is None or target_serial is None:
+        raise ValueError(
+            "Cannot execute KILL_SESSION: No valid blocker session identified in lock telemetry or execution context. "
+            "Aborting remediation to prevent unsafe termination."
+        )
+
     return eng.execute_kill_session(
-        sid=root.get("sid") or ctx.get("target_sid", 412),
-        serial=root.get("serial_number") or ctx.get("target_serial", 28419),
+        sid=target_sid,
+        serial=target_serial,
         object_name=root.get("object_name", ctx.get("target_staging_table", "MSC_ST_DEMANDS")),
         inst_id=root.get("inst_id"),
         username=root.get("oracle_username", "APPS"),
@@ -837,12 +862,12 @@ def hitl_gate_node(state: AgentState) -> dict:
     risk = rule.risk_tier
     blocker = next((x for x in state.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})
 
-    # Safety Check: Abort if KILL_SESSION requested but no root blocker exists in telemetry
-    if action == "KILL_SESSION" and not blocker:
+    # Safety Check: Abort if KILL_SESSION requested but no root blocker exists in telemetry or context
+    if action == "KILL_SESSION" and not blocker and not state.get("context", {}).get("target_sid"):
         return {
             "remediation_approved": False,
             "is_remediated": False,
-            "messages": [AIMessage(content="KILL_SESSION aborted: no root blocker found in lock telemetry.")],
+            "messages": [AIMessage(content="KILL_SESSION aborted: no root blocker found in lock telemetry or execution context.")],
         }
 
     # Centralized governance evaluation

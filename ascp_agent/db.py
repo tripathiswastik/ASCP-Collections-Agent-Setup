@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from ascp_agent.config import DEFAULT_CONFIG, OracleConfig
+from ascp_agent.config import DEFAULT_CONFIG, ConfigValidationError, OracleConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,17 +67,20 @@ class OracleConnectionPool:
 
     @property
     def is_simulation(self) -> bool:
-        """Returns True if explicitly configured for simulation or if driver/credentials unavailable."""
-        return (
-            self.config.use_simulation
-            or not self._driver_loaded
-            or self.config.host == "ebs-db.corp.internal"  # Default mocked host
-        )
+        """Returns True ONLY when explicitly configured for simulation."""
+        return bool(self.config.use_simulation)
 
     def initialize_sync_pool(self, min_conn: int = 1, max_conn: int = 5) -> bool:
-        """Initializes synchronous connection pool. Returns True on success, False on fallback."""
+        """Initializes synchronous connection pool. Fails closed if live mode cannot be established."""
         if self.is_simulation:
             return False
+
+        if not self._driver_loaded:
+            logger.error("Live Oracle mode required (use_simulation=False), but python-oracledb is not loaded.")
+            raise RuntimeError("Live Oracle connection required (use_simulation=False), but python-oracledb driver is not loaded.")
+
+        if self.config.host == "ebs-db.corp.internal":
+            raise ConfigValidationError("Production connection cannot target default mock endpoint 'ebs-db.corp.internal'.")
 
         if self._sync_pool is not None:
             return True
@@ -97,16 +100,23 @@ class OracleConnectionPool:
             self._is_connected = True
             logger.info("Oracle synchronous connection pool created successfully.")
             return True
-        except Exception as e:  # noqa: BLE001 -- fallback to simulation on any driver or connection error
-            logger.warning(f"Failed to create Oracle connection pool ({e}). Operating in simulation fallback.")
+        except Exception as e:
+            logger.error("Failed to create live Oracle connection pool: %s", e)
             self._sync_pool = None
             self._is_connected = False
-            return False
+            raise OracleQueryError(f"Failed to create live Oracle connection pool: {e}") from e
 
     async def initialize_async_pool(self, min_conn: int = 1, max_conn: int = 5) -> bool:
-        """Initializes asynchronous connection pool. Returns True on success, False on fallback."""
+        """Initializes asynchronous connection pool. Fails closed if live mode cannot be established."""
         if self.is_simulation:
             return False
+
+        if not self._driver_loaded:
+            logger.error("Live Oracle mode required (use_simulation=False), but python-oracledb is not loaded.")
+            raise RuntimeError("Live Oracle connection required (use_simulation=False), but python-oracledb driver is not loaded.")
+
+        if self.config.host == "ebs-db.corp.internal":
+            raise ConfigValidationError("Production connection cannot target default mock endpoint 'ebs-db.corp.internal'.")
 
         if self._async_pool is not None:
             return True
@@ -126,11 +136,11 @@ class OracleConnectionPool:
             self._is_connected = True
             logger.info("Oracle asynchronous connection pool created successfully.")
             return True
-        except Exception as e:  # noqa: BLE001 -- fallback to simulation on any driver or connection error
-            logger.warning(f"Failed to create Oracle async pool ({e}). Operating in simulation fallback.")
+        except Exception as e:
+            logger.error("Failed to create live Oracle async pool: %s", e)
             self._async_pool = None
             self._is_connected = False
-            return False
+            raise OracleQueryError(f"Failed to create live Oracle async pool: {e}") from e
 
     @contextmanager
     def get_connection(self) -> Generator[Any, None, None]:
@@ -282,18 +292,44 @@ class OracleConnectionPool:
             }
 
     def close(self) -> None:
-        """Closes all active pools and releases resources."""
+        """Closes all active pools and releases resources safely across sync and async contexts."""
         if self._sync_pool is not None:
             try:
                 self._sync_pool.close()
-            except OSError as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("Error closing sync pool: %s", exc)
             self._sync_pool = None
 
         if self._async_pool is not None:
             try:
-                asyncio.run(self._async_pool.close())
-            except OSError as exc:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop is not None and loop.is_running():
+                    loop.create_task(self._async_pool.close())
+                else:
+                    asyncio.run(self._async_pool.close())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Error closing async pool: %s", exc)
+            self._async_pool = None
+
+        self._is_connected = False
+
+    async def aclose(self) -> None:
+        """Asynchronously closes all active pools and releases resources."""
+        if self._sync_pool is not None:
+            try:
+                self._sync_pool.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Error closing sync pool: %s", exc)
+            self._sync_pool = None
+
+        if self._async_pool is not None:
+            try:
+                await self._async_pool.close()
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("Error closing async pool: %s", exc)
             self._async_pool = None
 
