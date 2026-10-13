@@ -7,16 +7,75 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // API Security Configuration
-  // Operator token is entered once per browser session; it is never stored in source.
-  let API_TOKEN = sessionStorage.getItem('ascpToken') || '';
-  if (!API_TOKEN) {
-    API_TOKEN = window.prompt('Enter operator API token') || '';
-    sessionStorage.setItem('ascpToken', API_TOKEN);
+  // Operator token is stored per browser session in sessionStorage, defaulting to local dev token.
+  let API_TOKEN = sessionStorage.getItem('ascpToken') || 'dev-operator-secret-token';
+
+  const tokenStatusPill = document.getElementById('tokenStatusPill');
+  const tokenBadgeLabel = document.getElementById('tokenBadgeLabel');
+  const tokenModal = document.getElementById('tokenModal');
+  const tokenInput = document.getElementById('tokenInput');
+  const btnCloseTokenModal = document.getElementById('btnCloseTokenModal');
+  const btnCancelTokenModal = document.getElementById('btnCancelTokenModal');
+  const btnSaveTokenModal = document.getElementById('btnSaveTokenModal');
+
+  function updateTokenBadge(label, isUnauthorized = false) {
+    if (tokenBadgeLabel) tokenBadgeLabel.textContent = label;
+    if (tokenStatusPill) {
+      if (isUnauthorized) {
+        tokenStatusPill.classList.add('unauthorized');
+      } else {
+        tokenStatusPill.classList.remove('unauthorized');
+      }
+    }
   }
-  const apiFetch = (url, options = {}) => {
+
+  function openTokenModal(isPromptForAuth = false) {
+    if (!tokenModal) return;
+    if (tokenInput) {
+      tokenInput.value = API_TOKEN;
+      tokenInput.placeholder = isPromptForAuth ? 'Authentication required. Enter valid token' : 'e.g. dev-operator-secret-token';
+    }
+    tokenModal.classList.remove('hidden');
+    if (tokenInput) tokenInput.focus();
+  }
+
+  function closeTokenModal() {
+    if (tokenModal) tokenModal.classList.add('hidden');
+  }
+
+  if (tokenStatusPill) {
+    tokenStatusPill.addEventListener('click', () => openTokenModal(false));
+  }
+  if (btnCloseTokenModal) {
+    btnCloseTokenModal.addEventListener('click', closeTokenModal);
+  }
+  if (btnCancelTokenModal) {
+    btnCancelTokenModal.addEventListener('click', closeTokenModal);
+  }
+  if (btnSaveTokenModal) {
+    btnSaveTokenModal.addEventListener('click', () => {
+      const val = tokenInput ? tokenInput.value.trim() : '';
+      if (val) {
+        API_TOKEN = val;
+        sessionStorage.setItem('ascpToken', API_TOKEN);
+        updateTokenBadge('Token: Active', false);
+      }
+      closeTokenModal();
+      refreshTelemetry();
+    });
+  }
+
+  const apiFetch = async (url, options = {}) => {
     const headers = options.headers ? { ...options.headers } : {};
-    headers['X-API-Token'] = API_TOKEN;
-    return fetch(url, { ...options, headers });
+    if (API_TOKEN) {
+      headers['X-API-Token'] = API_TOKEN;
+    }
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      updateTokenBadge('Token: Invalid (401)', true);
+      openTokenModal(true);
+    }
+    return res;
   };
 
   // Core Navigation & Selectors

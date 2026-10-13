@@ -1091,6 +1091,83 @@ body.dark-theme {
   border-top: 1px solid var(--border-color);
 }
 
+/* Token Authentication Pill & Modal */
+.token-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.775rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.token-status-pill:hover {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: var(--accent-blue);
+  color: white;
+}
+
+.token-status-pill.unauthorized {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--accent-red);
+  color: #fca5a5;
+  animation: pulse-danger 1.5s infinite;
+}
+
+.modal-badge.blue {
+  color: #93c5fd;
+}
+
+.token-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1.15rem;
+}
+
+.token-input-group label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.token-text-input {
+  background: #060911;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.85rem;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.token-text-input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.token-hints {
+  font-size: 0.775rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.token-hints code {
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+}
+
 /* Scenario Quick Bar */
 .scenario-quick-bar-wrapper {
   background: rgba(11, 15, 25, 0.75);

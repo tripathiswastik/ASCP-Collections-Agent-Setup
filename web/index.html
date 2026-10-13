@@ -45,8 +45,14 @@
         </div>
       </div>
 
-      <!-- Scenario Switcher -->
+      <!-- Scenario Switcher & Auth Pill -->
       <div class="header-right">
+        <button class="token-status-pill" id="tokenStatusPill" title="Configure or update active operator token">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2l-2 2m-1-1l-3 3m2-2l-2 2m-7 1a7 7 0 1 0 0 14 7 7 0 0 0 0-14z"/>
+          </svg>
+          <span id="tokenBadgeLabel">Token: Active</span>
+        </button>
         <label for="scenarioSelector" class="selector-label">Failure Scenario:</label>
         <select id="scenarioSelector" class="scenario-dropdown">
           <!-- Populated dynamically via JS -->
@@ -453,6 +459,44 @@
           </svg>
           Approve &amp; Execute Remediation
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Operator Token Configuration Modal -->
+  <div class="modal-overlay hidden" id="tokenModal">
+    <div class="modal-card">
+      <div class="modal-top">
+        <div class="modal-badge blue">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          OPERATOR AUTHENTICATION
+        </div>
+        <button class="modal-close-btn" id="btnCloseTokenModal">&times;</button>
+      </div>
+
+      <div class="modal-content">
+        <h3>Operator API Token</h3>
+        <p class="modal-desc">
+          Configure an authorized operator token to authenticate REST requests to the ASCP Control Plane.
+        </p>
+
+        <div class="token-input-group">
+          <label for="tokenInput">X-API-Token / Bearer Secret</label>
+          <input type="password" id="tokenInput" class="token-text-input" placeholder="e.g. dev-operator-secret-token" />
+        </div>
+
+        <div class="token-hints">
+          <span>Supported Roles:</span>
+          <code>approver</code> (Full remediation authority) &bull; <code>viewer</code> (Read-only introspection)
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelTokenModal">Cancel</button>
+        <button class="btn btn-primary" id="btnSaveTokenModal">Save &amp; Apply Token</button>
       </div>
     </div>
   </div>

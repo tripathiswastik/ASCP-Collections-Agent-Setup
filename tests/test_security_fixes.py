@@ -62,6 +62,11 @@ def test_guardrail_allows_select_and_exact_kill():
 
 def test_static_path_blocks_traversal():
     assert resolve_static_path("/../ascp_agent/config.py") is None
+    assert resolve_static_path("/server.py") is None
+    assert resolve_static_path("/remediation_audit.jsonl") is None
+    assert resolve_static_path("/__init__.py") is None
+    assert resolve_static_path("/index.html") is not None
+    assert resolve_static_path("/") is not None
 
 
 def test_live_oracle_config_requires_password(monkeypatch=None):

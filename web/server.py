@@ -55,6 +55,8 @@ current_scenario_key = "ora_00054_mode6"
 _USED_APPROVAL_IDS: set = set()
 
 # Multi-session registry supporting concurrent / simultaneous diagnostic sessions
+MAX_SESSIONS = 50
+SESSION_TTL_SECONDS = 3600  # 1 hour
 _SESSIONS: dict[str, dict[str, Any]] = {}
 _ACTIVE_SESSION_ID: str = "default"
 thread_counter = 1
@@ -71,6 +73,34 @@ _SESSIONS[_ACTIVE_SESSION_ID] = {
 }
 
 
+def _prune_expired_sessions() -> None:
+    """Prune inactive sessions to prevent unbounded memory growth."""
+    with _SERVER_LOCK:
+        now = time.time()
+        expired = [
+            sid for sid, sinfo in _SESSIONS.items()
+            if sid != "default" and (now - sinfo.get("created_at", now) > SESSION_TTL_SECONDS)
+        ]
+        for sid in expired:
+            _SESSIONS.pop(sid, None)
+        if len(_SESSIONS) > MAX_SESSIONS:
+            sorted_sids = sorted(
+                (sid for sid in _SESSIONS if sid != "default"),
+                key=lambda s: _SESSIONS[s].get("created_at", 0)
+            )
+            for sid in sorted_sids[: len(_SESSIONS) - MAX_SESSIONS]:
+                _SESSIONS.pop(sid, None)
+
+
+ALLOWED_STATIC_EXTENSIONS = {
+    ".html", ".css", ".js", ".json", ".svg", ".png",
+    ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".map", ".txt"
+}
+BLOCKED_STATIC_FILES = {
+    "server.py", "__init__.py", "remediation_audit.jsonl"
+}
+
+
 def resolve_static_path(url_path: str) -> str | None:
     """Return an absolute file path inside PUBLIC_DIR, or None if not allowed."""
     relative = urllib.parse.unquote(url_path).lstrip("/") or "index.html"
@@ -82,6 +112,16 @@ def resolve_static_path(url_path: str) -> str | None:
         return None
     if not inside or not os.path.isfile(candidate):
         return None
+
+    filename = os.path.basename(candidate).lower()
+    ext = os.path.splitext(candidate)[1].lower()
+
+    # Block sensitive server files, audit logs, python scripts, and non-whitelisted extensions
+    if filename.startswith(".") or filename in BLOCKED_STATIC_FILES or ext in (".py", ".pyc", ".jsonl"):
+        return None
+    if ext not in ALLOWED_STATIC_EXTENSIONS:
+        return None
+
     return candidate
 
 
@@ -183,19 +223,44 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             return None
         return data if isinstance(data, dict) else None
 
+    def _add_cors_headers(self):
+        """Inject configurable Cross-Origin Resource Sharing headers."""
+        origin = self.headers.get("Origin") or "*"
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Token, Authorization")
+        self.send_header("Access-Control-Max-Age", "86400")
+
+    def _add_security_headers(self, is_html: bool = False):
+        """Inject defense-in-depth security headers on all HTTP responses."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        if is_html:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; "
+                "img-src 'self' data:; "
+                "connect-src 'self' http://127.0.0.1:* http://localhost:*;"
+            )
+
     def _send_json(self, data: Any, status: int = 200):
         body = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self._add_security_headers()
+        self._add_cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("X-Content-Type-Options", "nosniff")
+        self._add_security_headers()
+        self._add_cors_headers()
         self.end_headers()
 
     def do_GET(self):
@@ -281,6 +346,11 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
             guessed_type, _ = mimetypes.guess_type(file_path)
             content_type = guessed_type or "text/html; charset=utf-8"
+            if content_type.startswith("text/") and "charset" not in content_type:
+                content_type += "; charset=utf-8"
+            elif content_type == "application/javascript":
+                content_type = "application/javascript; charset=utf-8"
+
             with open(file_path, "rb") as f:
                 content = f.read()
 
@@ -290,8 +360,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self._add_security_headers(is_html=file_path.endswith(".html"))
+            self._add_cors_headers()
             self.end_headers()
             self.wfile.write(content)
 
@@ -314,6 +384,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             key = req_data.get("key", "ora_00054_mode6")
             if key in SCENARIOS:
                 with _SERVER_LOCK:
+                    _prune_expired_sessions()
                     current_scenario_key = key
                     thread_counter += 1
                     sess_id = f"sess-{uuid.uuid4().hex[:8]}"
@@ -354,6 +425,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
             if action != "RESUME":
                 with _SERVER_LOCK:
+                    _prune_expired_sessions()
                     thread_counter += 1
                     sess_id = sess_id or f"sess-{uuid.uuid4().hex[:8]}"
                     new_graph = create_ascp_diagnostic_graph()
@@ -538,9 +610,16 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 def run_server(port: int = 8085):
     active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
     active_tokens.update(OPERATOR_TOKENS)
+    env_mode = os.environ.get("ASCP_ENV", "development").lower()
     if not active_tokens:
+        if env_mode in ("production", "prod"):
+            raise RuntimeError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: ASCP_OPERATOR_TOKENS must be set in production mode. "
+                "Refusing to generate or fallback to dev tokens."
+            )
         dev_token = os.environ.get("ASCP_DEV_TOKEN", "dev-operator-secret-token")
-        print("[!] ASCP_OPERATOR_TOKENS not specified in environment.")
+        logger.warning("SECURITY WARNING: ASCP_OPERATOR_TOKENS not specified. Using development token.")
+        print("[!] SECURITY WARNING: ASCP_OPERATOR_TOKENS not specified in environment.")
         print(f"[+] Initialized local dev operator token: {dev_token}")
         OPERATOR_TOKENS[dev_token] = {"user": "local-developer", "role": "approver"}
         active_tokens[dev_token] = {"user": "local-developer", "role": "approver"}
