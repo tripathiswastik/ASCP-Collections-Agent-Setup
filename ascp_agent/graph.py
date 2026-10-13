@@ -9,8 +9,9 @@ import time
 import json
 import logging
 import uuid
+import hashlib
 from typing import Dict, Any, Optional, Callable, List, Tuple
-from ascp_agent.state import AgentState, DiagnosticState, AIMessage, HumanMessage, Command, Send, InterruptSignal, interrupt
+from ascp_agent.state import AgentState, DiagnosticState, Message, AIMessage, HumanMessage, Command, Send, InterruptSignal, interrupt
 from ascp_agent.drain_parser import DrainLogParser
 from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.hitl_governance import HITLGovernanceEngine
@@ -73,6 +74,37 @@ class MemorySaver:
     def get_history(self, thread_id: str) -> List[CheckpointRecord]:
         return self.threads.get(thread_id, [])
 
+def serialize_state_payload(state: Any) -> Any:
+    """Recursively serializes state into JSON-safe structure preserving typed message representations."""
+    if isinstance(state, (AIMessage, HumanMessage, Message)):
+        return {
+            "__type__": state.__class__.__name__,
+            "content": state.content,
+            "role": getattr(state, "role", "assistant")
+        }
+    if isinstance(state, dict):
+        return {k: serialize_state_payload(v) for k, v in state.items() if not callable(v)}
+    if isinstance(state, list):
+        return [serialize_state_payload(item) for item in state]
+    return state
+
+def deserialize_state_payload(payload: Any) -> Any:
+    """Recursively deserializes JSON payload restoring typed message instances."""
+    if isinstance(payload, dict):
+        if "__type__" in payload:
+            type_name = payload["__type__"]
+            content = payload.get("content", "")
+            if type_name == "AIMessage":
+                return AIMessage(content=content)
+            elif type_name == "HumanMessage":
+                return HumanMessage(content=content)
+            elif type_name == "Message":
+                return Message(content=content, role=payload.get("role", "assistant"))
+        return {k: deserialize_state_payload(v) for k, v in payload.items()}
+    if isinstance(payload, list):
+        return [deserialize_state_payload(item) for item in payload]
+    return payload
+
 class PostgresSaver:
     """Durable production checkpointer storing snapshots indexed by persistent thread_id.
     Enables fault-tolerant state snapshots, time-travel debugging, and multi-turn approvals
@@ -112,12 +144,12 @@ class PostgresSaver:
         step = self._memory_backup.save(thread_id, state, next_node)
         if self._psycopg and self.dsn:
             try:
+                serialized = serialize_state_payload(dict(state))
                 with self._psycopg.connect(self.dsn) as conn:
                     with conn.cursor() as cur:
-                        serializable = {k: v for k, v in dict(state).items() if not callable(v)}
                         cur.execute(
                             "INSERT INTO ascp_agent_checkpoints (thread_id, step_index, state_payload, next_node) VALUES (%s, %s, %s, %s)",
-                            (thread_id, step, json.dumps(serializable, default=str), next_node)
+                            (thread_id, step, json.dumps(serialized), next_node)
                         )
                     conn.commit()
             except Exception:
@@ -125,10 +157,54 @@ class PostgresSaver:
         return step
 
     def get_latest(self, thread_id: str) -> Optional[CheckpointRecord]:
-        return self._memory_backup.get_latest(thread_id)
+        mem_latest = self._memory_backup.get_latest(thread_id)
+        if mem_latest is not None:
+            return mem_latest
+        if self._psycopg and self.dsn:
+            try:
+                with self._psycopg.connect(self.dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id DESC LIMIT 1",
+                            (thread_id,)
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            step_index, state_json, next_node = row
+                            raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
+                            restored = deserialize_state_payload(raw_dict)
+                            state_obj = DiagnosticState(restored)
+                            record = CheckpointRecord(step_index, state_obj, next_node)
+                            self._memory_backup.threads.setdefault(thread_id, []).append(record)
+                            return record
+            except Exception:
+                logger.exception("Failed to query checkpoint from PostgreSQL for thread %s", thread_id)
+        return None
 
     def get_history(self, thread_id: str) -> List[CheckpointRecord]:
-        return self._memory_backup.get_history(thread_id)
+        mem_hist = self._memory_backup.get_history(thread_id)
+        if mem_hist:
+            return mem_hist
+        if self._psycopg and self.dsn:
+            try:
+                with self._psycopg.connect(self.dsn) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT step_index, state_payload, next_node FROM ascp_agent_checkpoints WHERE thread_id = %s ORDER BY id ASC",
+                            (thread_id,)
+                        )
+                        records = []
+                        for row in cur.fetchall():
+                            step_index, state_json, next_node = row
+                            raw_dict = json.loads(state_json) if isinstance(state_json, str) else state_json
+                            restored = deserialize_state_payload(raw_dict)
+                            records.append(CheckpointRecord(step_index, DiagnosticState(restored), next_node))
+                        if records:
+                            self._memory_backup.threads[thread_id] = list(records)
+                            return records
+            except Exception:
+                logger.exception("Failed to query checkpoint history from PostgreSQL for thread %s", thread_id)
+        return []
 
 class StateGraph:
     """StateGraph engine implementing directed state transitions, conditional edges, and HITL gates."""
@@ -457,13 +533,55 @@ def rca_hypothesis_node(state: AgentState) -> dict:
         "messages": [AIMessage(content=f"RCA Synthesis: {thesis} | Diagnostic Confidence: {confidence:.1f}% | Risk Tier: {risk}.")]
     }
 
+ACTION_EXECUTORS: Dict[str, Callable[[RemediationEngine, AgentState, bool], Any]] = {
+    "KILL_SESSION": lambda eng, st, dry: eng.execute_kill_session(
+        sid=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("sid") or st.get("context", {}).get("target_sid", 412),
+        serial=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("serial_number") or st.get("context", {}).get("target_serial", 28419),
+        object_name=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("object_name", st.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")),
+        inst_id=(next((x for x in st.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})).get("inst_id"),
+        dry_run=dry
+    ),
+    "PURGE_STAGING_NO_VALIDATION": lambda eng, st, dry: eng.execute_purge_staging_no_validation(
+        instance_id=st.get("context", {}).get("instance_id", 1001),
+        dry_run=dry
+    ),
+    "PURGE_STAGING": lambda eng, st, dry: eng.execute_purge_staging_no_validation(
+        instance_id=st.get("context", {}).get("instance_id", 1001),
+        dry_run=dry
+    ),
+    "RESET_PIPE": lambda eng, st, dry: eng.execute_reset_pipe(
+        pipe_name=f"MSC_PIPE_{st.get('context', {}).get('instance_code', 'PRD1')}",
+        dry_run=dry
+    ),
+    "ALIGN_INDEXES": lambda eng, st, dry: eng.execute_align_indexes(
+        table_name=st.get("context", {}).get("target_staging_table", "MSC_DEMANDS"),
+        dry_run=dry
+    ),
+    "REBUILD_ALIGN_INDEXES": lambda eng, st, dry: eng.execute_align_indexes(
+        table_name=st.get("context", {}).get("target_staging_table", "MSC_DEMANDS"),
+        dry_run=dry
+    ),
+    "RERUN_SNAPSHOT": lambda eng, st, dry: eng.execute_snapshot_refresh(
+        mview_name=st.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES"),
+        mode="F",
+        dry_run=dry
+    ),
+    "RERUN_SNAPSHOT_FAST": lambda eng, st, dry: eng.execute_snapshot_refresh(
+        mview_name=st.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES"),
+        mode="F",
+        dry_run=dry
+    ),
+}
+
 def hitl_gate_node(state: AgentState) -> dict:
-    """Step 5: Governance Gate & Human-in-the-Loop (HITL) Interrupt.
+    """Step 5: Table-Driven Governance Gate & Human-in-the-Loop (HITL) Interrupt.
     Strictly idempotent: Pre-interrupt logic only inspects telemetry and builds payloads.
     No database mutations occur before interrupt(). Upon resumption via Command(resume=...),
-    the node re-executes cleanly, skips the interrupt, and executes the remediation exactly once.
+    the node re-executes cleanly, validates the approval fingerprint against current state,
+    re-checks live session status, and dispatches via table-driven ACTION_EXECUTORS.
     """
     action = state.get("remediation_action")
+    rule = HITLGovernanceEngine.evaluate_action_risk(action or "")
 
     # Idempotent guard: if already remediated, do not repeat execution
     if state.get("is_remediated"):
@@ -474,7 +592,7 @@ def hitl_gate_node(state: AgentState) -> dict:
         }
 
     confidence = state.get("confidence_score", 0.0)
-    risk = state.get("risk_level", "HIGH")
+    risk = rule.risk_tier
     blocker = next((x for x in state.get("lock_telemetry", []) if x.get("lock_depth") == 1), {})
 
     # Safety Check: Abort if KILL_SESSION requested but no root blocker exists in telemetry
@@ -485,14 +603,22 @@ def hitl_gate_node(state: AgentState) -> dict:
             "messages": [AIMessage(content="KILL_SESSION aborted: no root blocker found in lock telemetry.")],
         }
 
-    # Centralized governance evaluation (#15)
+    # Centralized governance evaluation
     routing = HITLGovernanceEngine.evaluate_governance_routing(action or "", confidence)
-    requires_approval = (routing in ["MANDATORY_HITL_INTERRUPT", "CONDITIONAL_INTERRUPT"]) or (action == "KILL_SESSION")
+    requires_approval = rule.requires_mandatory_approval or (routing in ["MANDATORY_HITL_INTERRUPT", "CONDITIONAL_INTERRUPT"])
+
+    target_sid = blocker.get("sid")
+    target_serial = blocker.get("serial_number")
+    target_obj = blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS"))
+    target_inst = blocker.get("inst_id")
+    approval_fingerprint = hashlib.sha256(
+        f"{action}:{target_sid}:{target_serial}:{target_obj}:{target_inst}".encode("utf-8")
+    ).hexdigest()
 
     # If approval is required and neither approved nor human_response evaluated yet:
     if requires_approval and not state.get("remediation_approved") and state.get("human_response") is None:
         rec_sql = (
-            format_kill_session_sql(blocker["sid"], blocker["serial_number"])
+            format_kill_session_sql(blocker["sid"], blocker["serial_number"], inst_id=blocker.get("inst_id"))
             if action == "KILL_SESSION"
             else format_purge_staging_sql()
         )
@@ -503,49 +629,62 @@ def hitl_gate_node(state: AgentState) -> dict:
 
         approval_payload = {
             "approval_id": appr_id,
+            "approval_fingerprint": approval_fingerprint,
             "created_at": now_ts,
             "expires_at": expires_ts,
             "expires_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires_ts)),
             "action": action,
             "risk_tier": risk,
             "confidence_score": confidence,
-            "target_sid": blocker.get("sid"),
-            "target_serial": blocker.get("serial_number"),
-            "target_object": blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS")),
+            "target_sid": target_sid,
+            "target_serial": target_serial,
+            "target_object": target_obj,
+            "target_inst_id": target_inst,
             "lock_mode": blocker.get("locked_mode_text", "Exclusive (X)"),
             "recommended_sql": rec_sql,
             "reasoning": f"Diagnostic confidence is {confidence:.1f}%. High-risk action '{action}' requires explicit DBA authorization."
         }
-        # Pre-interrupt logic is pure and side-effect free: strictly idempotent
         interrupt(approval_payload)
 
-    # If operator rejected the action upon resume:
-    if state.get("human_response", {}).get("approved") is False:
+    human_resp = state.get("human_response", {})
+    if human_resp.get("approved") is False:
         return {
             "remediation_approved": False,
             "is_remediated": False,
             "messages": [AIMessage(content=f"Remediation action '{action}' rejected by DBA operator.")]
         }
 
-    # Execute remediation subroutine
+    # Bind approval to what operator saw: reject if submitted fingerprint does not match
+    submitted_fingerprint = human_resp.get("approval_fingerprint")
+    if submitted_fingerprint and submitted_fingerprint != approval_fingerprint:
+        return {
+            "remediation_approved": False,
+            "is_remediated": False,
+            "messages": [AIMessage(content="Approval rejected: Target fingerprint mismatch. Blocker session changed while waiting for approval.")]
+        }
+
+    # Oracle-specific safety: Re-query session immediately prior to termination
+    if action == "KILL_SESSION" and target_sid:
+        lock_engine = LockDiagnosticsEngine()
+        is_active = lock_engine.verify_session_active(target_sid, target_serial or 0, target_inst)
+        if not is_active:
+            return {
+                "remediation_approved": True,
+                "is_remediated": False,
+                "messages": [AIMessage(content=f"Session SID {target_sid} (serial {target_serial}) is no longer active; lock cleared while awaiting approval. No termination needed.")]
+            }
+
+    executor = ACTION_EXECUTORS.get(action or "")
+    if executor is None:
+        return {
+            "remediation_approved": True,
+            "is_remediated": False,
+            "messages": [AIMessage(content=f"Action '{action}' has no executor wired; nothing was run. Escalate to a DBA.")]
+        }
+
     rem_engine = RemediationEngine()
-    rule = HITLGovernanceEngine.evaluate_action_risk(action or "")
-
-    # If dry-run pre-validation is required by governance rule, run it first
     if rule.requires_dry_run_validation:
-        dry_res = None
-        if action == "KILL_SESSION" and blocker:
-            dry_res = rem_engine.execute_kill_session(blocker["sid"], blocker["serial_number"], blocker.get("object_name", "MSC_ST_DEMANDS"), dry_run=True)
-        elif action in ["PURGE_STAGING", "PURGE_STAGING_NO_VALIDATION"]:
-            instance_id = state.get("context", {}).get("instance_id", 1001)
-            dry_res = rem_engine.execute_purge_staging_no_validation(instance_id=instance_id, dry_run=True)
-        elif action in ["ALIGN_INDEXES", "REBUILD_ALIGN_INDEXES"]:
-            table_name = state.get("context", {}).get("target_staging_table", "MSC_DEMANDS")
-            dry_res = rem_engine.execute_align_indexes(table_name=table_name, dry_run=True)
-        elif action == "RESET_PIPE":
-            instance_code = state.get("context", {}).get("instance_code", "PRD1")
-            dry_res = rem_engine.execute_reset_pipe(pipe_name=f"MSC_PIPE_{instance_code}", dry_run=True)
-
+        dry_res = executor(rem_engine, state, True)
         if dry_res and not dry_res.success:
             return {
                 "remediation_approved": True,
@@ -554,58 +693,12 @@ def hitl_gate_node(state: AgentState) -> dict:
                 "messages": [AIMessage(content=f"Dry run pre-validation failed for '{action}': {dry_res.message}. Aborting execution.")]
             }
 
-    if action == "KILL_SESSION":
-        sid = blocker["sid"]
-        serial = blocker["serial_number"]
-        obj = blocker.get("object_name", "MSC_ST_DEMANDS")
-        res = rem_engine.execute_kill_session(sid, serial, obj)
-        return {
-            "remediation_approved": True,
-            "is_remediated": True,
-            "remediation_result": vars(res),
-            "messages": [AIMessage(content=res.message)]
-        }
-    elif action in ["PURGE_STAGING", "PURGE_STAGING_NO_VALIDATION"]:
-        instance_id = state.get("context", {}).get("instance_id", 1001)
-        res = rem_engine.execute_purge_staging_no_validation(instance_id=instance_id)
-        return {
-            "remediation_approved": True,
-            "is_remediated": True,
-            "remediation_result": vars(res),
-            "messages": [AIMessage(content=res.message)]
-        }
-    elif action == "RESET_PIPE":
-        instance_code = state.get("context", {}).get("instance_code", "PRD1")
-        res = rem_engine.execute_reset_pipe(pipe_name=f"MSC_PIPE_{instance_code}")
-        return {
-            "remediation_approved": True,
-            "is_remediated": True,
-            "remediation_result": vars(res),
-            "messages": [AIMessage(content=res.message)]
-        }
-    elif action in ["ALIGN_INDEXES", "REBUILD_ALIGN_INDEXES"]:
-        table_name = state.get("context", {}).get("target_staging_table", "MSC_DEMANDS")
-        res = rem_engine.execute_align_indexes(table_name=table_name)
-        return {
-            "remediation_approved": True,
-            "is_remediated": True,
-            "remediation_result": vars(res),
-            "messages": [AIMessage(content=res.message)]
-        }
-    elif action in ["RERUN_SNAPSHOT", "RERUN_SNAPSHOT_FAST"]:
-        mview = state.get("context", {}).get("mview_name", "MLOG$_OE_ORDER_LINES")
-        res = rem_engine.execute_snapshot_refresh(mview_name=mview, mode="F")
-        return {
-            "remediation_approved": True,
-            "is_remediated": True,
-            "remediation_result": vars(res),
-            "messages": [AIMessage(content=res.message)]
-        }
-
+    res = executor(rem_engine, state, False)
     return {
         "remediation_approved": True,
-        "is_remediated": False,
-        "messages": [AIMessage(content=f"Action '{action}' has no executor wired; nothing was run. Escalate to a DBA.")]
+        "is_remediated": res.success,
+        "remediation_result": vars(res),
+        "messages": [AIMessage(content=res.message)]
     }
 
 def servicenow_node(state: AgentState) -> dict:

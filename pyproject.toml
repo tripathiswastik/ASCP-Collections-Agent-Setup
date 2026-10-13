@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ascp-diagnostic-agent"
+version = "1.0.0"
+description = "Autonomous Oracle EBS Dual-Stage ETL & ASCP Diagnostic Control Plane Agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Proprietary / Enterprise"}
+authors = [
+    {name = "ASCP Autonomous Diagnostic Team"}
+]
+dependencies = [
+    "typing_extensions>=4.10.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+live = [
+    "oracledb>=2.0.0",
+    "psycopg2-binary>=2.9.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.10.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

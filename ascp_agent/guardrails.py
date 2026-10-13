@@ -41,7 +41,7 @@ class TokenTracker:
                 f"Hard token spend cap of ${self.spend_cap_usd:.2f} exceeded! Current spend: ${self.total_cost_usd:.4f}. Human escalation triggered."
             )
 
-_KILL_PATTERN = re.compile(r"^ALTER SYSTEM KILL SESSION '\d+,\d+' IMMEDIATE$")
+_KILL_PATTERN = re.compile(r"^ALTER SYSTEM KILL SESSION '\d+,\d+(?:,@\d+)?' IMMEDIATE$")
 _CALL_PATTERN = re.compile(r"^(?:BEGIN|EXEC) ([A-Z0-9_$#.]+)\((.*)\)(?:; END)?$")
 _SAFE_ARGUMENTS = re.compile(r"^[A-Z0-9_$#.,=> ']*$")
 _REGISTRY_RESET_PATTERN = re.compile(r"^UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = \d+$")

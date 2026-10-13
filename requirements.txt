@@ -1,13 +1,14 @@
 # Core Runtime Dependencies for Autonomous ASCP Collections Diagnostic Agent
-# Compatible with Python 3.10, 3.11, 3.12
-# Note: The agent graph engine (ascp_agent.graph) is self-contained and implemented
-# in pure Python standard library with typing_extensions. It does NOT require external langgraph.
+# Target: Python 3.10, 3.11, 3.12
+# The agent control plane (ascp_agent.graph) is self-contained with zero external framework locks.
 
-typing_extensions>=4.7.0
-requests>=2.28.0
+typing_extensions==4.12.2
+requests==2.32.3
 
-# Optional Database & Checkpointing Drivers:
-# Install these only when connecting to a live physical Oracle EBS database
-# or using a persistent PostgreSQL backend for checkpoint storage:
-# oracledb>=2.0.0
-# psycopg2-binary>=2.9.0
+# Optional Live Database & Persistent Checkpointer Drivers:
+# oracledb==2.5.1
+# psycopg2-binary==2.9.10
+# pytest==8.3.4
+# pytest-cov==6.0.0
+# ruff==0.9.1
+# mypy==1.14.1

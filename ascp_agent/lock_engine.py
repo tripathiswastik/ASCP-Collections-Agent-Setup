@@ -301,11 +301,23 @@ class LockDiagnosticsEngine:
         """Inspects V$TRANSACTION (USED_UREC) for active uncommitted rollback volume.
         Prevents PMON rollback hang where held locks persist while un-abortable rollback executes.
         """
-        # In live Oracle DB: query V$TRANSACTION via V$SESSION.TADDR
-        if sid == 999:  # High transaction volume scenario
-            used_urec = 150000
+        if not self.pool.is_simulation:
+            query = SQL_QUERY_REGISTRY["SESSION_UNDO_VOLUME_CHECK"]
+            try:
+                res = self.pool.execute_query(query, {"sid": sid})
+                records = res.to_dicts()
+                if records:
+                    used_urec = records[0].get("used_urec", 0) or 0
+                else:
+                    used_urec = 0
+            except Exception as exc:
+                logger.exception("Live query to V$TRANSACTION failed for SID %s", sid)
+                raise LockQueryError(f"Live undo-volume query failed for SID {sid}") from exc
         else:
-            used_urec = 420  # Standard low transaction volume
+            if sid == 999:  # High transaction volume scenario
+                used_urec = 150000
+            else:
+                used_urec = 420  # Standard low transaction volume
         
         high_risk = used_urec > 100000
         estimated_rollback_sec = round(used_urec * 0.0003, 1)
@@ -317,3 +329,31 @@ class LockDiagnosticsEngine:
             "estimated_rollback_sec": estimated_rollback_sec,
             "recommendation": "DEFER_KILL_ALERT_DBA" if high_risk else "PROCEED_WITH_TERMINATION"
         }
+
+    def verify_session_active(self, sid: int, serial: int, inst_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Re-queries the database immediately prior to termination to confirm the session
+        is still active and that the SID has not been recycled for a new connection.
+        """
+        if not self.pool.is_simulation:
+            if inst_id is not None:
+                sql = "SELECT s.inst_id, s.sid, s.serial#, s.status, s.username FROM gv$session s WHERE s.sid = :sid AND s.serial# = :serial AND s.inst_id = :inst_id"
+                params = {"sid": sid, "serial": serial, "inst_id": inst_id}
+            else:
+                sql = "SELECT s.sid, s.serial#, s.status, s.username FROM v$session s WHERE s.sid = :sid AND s.serial# = :serial"
+                params = {"sid": sid, "serial": serial}
+            try:
+                res = self.pool.execute_query(sql, params)
+                records = res.to_dicts()
+                if records and records[0].get("status") != "KILLED":
+                    return records[0]
+                return None
+            except Exception as exc:
+                logger.exception("Failed to verify active session status for SID %s", sid)
+                raise LockQueryError(f"Session active verification failed for SID {sid}") from exc
+
+        # Simulated mode: verify SID/serial consistency
+        if sid <= 0 or serial <= 0:
+            return None
+        if sid == 412 and serial != 28419:
+            return None
+        return {"sid": sid, "serial#": serial, "status": "ACTIVE", "username": "APPS", "inst_id": inst_id or 1}

@@ -8,11 +8,44 @@ import urllib.request
 import urllib.error
 import json
 import sys
+import os
+import time
+import threading
+
+# Add root directory to sys.path
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+from web.server import ThreadedASCPDiagnosticServer, ASCPDiagnosticHandler, OPERATOR_TOKENS
+
+TOKEN = "e2e-verification-approver-token"
+
+def ensure_server(host="127.0.0.1", port=8085):
+    """Spins up a test server thread if a server isn't already running."""
+    try:
+        req = urllib.request.Request(f"http://{host}:{port}/api/status", headers={"X-API-Token": TOKEN})
+        with urllib.request.urlopen(req, timeout=1):
+            return None  # Server already running and reachable
+    except (urllib.error.URLError, ConnectionRefusedError):
+        pass
+    except urllib.error.HTTPError as e:
+        if e.code in (200, 401, 403):
+            return None
+
+    OPERATOR_TOKENS[TOKEN] = {"user": "VerificationApprover", "role": "approver"}
+    httpd = ThreadedASCPDiagnosticServer((host, port), ASCPDiagnosticHandler)
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+    time.sleep(0.3)
+    return httpd
 
 def run_verification(base_url="http://localhost:8085"):
+    server_instance = ensure_server(port=8085)
+
     def req(endpoint, data=None):
         url = f"{base_url}{endpoint}"
-        headers = {'X-API-Token': 'dev-token'}
+        headers = {'X-API-Token': TOKEN}
         if data is not None:
             headers['Content-Type'] = 'application/json'
             r = urllib.request.Request(url, data=json.dumps(data).encode(), headers=headers)
@@ -108,7 +141,10 @@ def run_verification(base_url="http://localhost:8085"):
     except urllib.error.HTTPError as err:
         assert err.code in (400, 409), f"Expected HTTP 400 or 409, got {err.code}"
         print(f" -> Anti-Replay Verified: Server rejected replayed approval with HTTP {err.code}")
-    
+
+    if server_instance:
+        server_instance.shutdown()
+
     print("\n================================================================================")
     print("      [SUCCESS] ALL SCRATCHPAD CHECKLIST ITEMS VERIFIED AND VALIDATED!")
     print("================================================================================")

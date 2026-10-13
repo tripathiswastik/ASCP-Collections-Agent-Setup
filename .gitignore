@@ -23,4 +23,5 @@ Desktop.ini
 dist/
 *.zip
 *.tar.gz
+*.jsonl
 

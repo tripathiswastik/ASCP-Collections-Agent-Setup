@@ -97,7 +97,7 @@ class ServiceNowClient:
 
         recovery_cmd = format_recovery_command_block(instance_id=instance_id, instance_code="PRD1", validation="N")
 
-        return self.build_incident_payload(
+        payload = self.build_incident_payload(
             short_description=f"ASCP Collection Failure: {failed_phase} phase on {target_table}",
             description=f"Autonomous ASCP Diagnostic Agent detected {domain} on {target_table}. Confidence: {confidence:.1f}%.",
             pipeline_stage="Stage 2: Planning ODS Load (MSCPDC)",
@@ -109,6 +109,11 @@ class ServiceNowClient:
             agent_reasoning_trace=f"Domain: {domain}, Confidence: {confidence:.1f}%, Risk: {risk}.",
             lock_hierarchy=state.get("lock_telemetry", [])
         )
+        run_id = state.get("context", {}).get("run_id")
+        if run_id:
+            payload["correlation_id"] = run_id
+            payload["u_diagnostic_payload"]["correlation_id"] = run_id
+        return payload
 
     def _simulated_result(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Generate auditable simulated ServiceNow ticket for dry-run and local testing."""

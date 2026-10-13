@@ -16,7 +16,7 @@ import hmac
 import uuid
 import time
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Add parent directory to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -85,19 +85,57 @@ class ThreadedASCPDiagnosticServer(socketserver.ThreadingMixIn, socketserver.TCP
     daemon_threads = True
 
 
+class Operator(str):
+    """Operator identity carrying name and permissions role ('approver' vs 'viewer')."""
+    def __new__(cls, name: str, role: str = "approver"):
+        obj = super().__new__(cls, name)
+        obj.name = name
+        obj.role = role
+        return obj
+
+_AUDIT_LOG_LOCK = threading.Lock()
+_AUDIT_EVENTS: List[Dict[str, Any]] = []
+
+def record_audit_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Append immutable audit entry to in-memory audit trail and disk log."""
+    entry = {
+        "audit_id": f"aud-{uuid.uuid4().hex[:12]}",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **event
+    }
+    with _AUDIT_LOG_LOCK:
+        _AUDIT_EVENTS.append(entry)
+        try:
+            log_path = os.path.join(PUBLIC_DIR, "remediation_audit.jsonl")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except Exception:
+            pass
+    return entry
+
+
 class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, request, client_address, server):
         super().__init__(request, client_address, server)
 
-    def _authenticate(self) -> Optional[str]:
-        """Return the operator name for a valid X-API-Token header, else None."""
+    def _authenticate(self) -> Optional[Operator]:
+        """Return the operator identity for a valid X-API-Token header, else None."""
         supplied = self.headers.get("X-API-Token", "").strip()
         if not supplied:
             return None
         supplied_bytes = supplied.encode("utf-8")
-        for token, username in OPERATOR_TOKENS.items():
+        for token, val in OPERATOR_TOKENS.items():
             if hmac.compare_digest(supplied_bytes, token.encode("utf-8")):
-                return username
+                if isinstance(val, dict):
+                    user = val.get("user", "operator")
+                    role = val.get("role", "approver")
+                elif isinstance(val, str):
+                    user = val
+                    role = "viewer" if ("viewer" in val.lower() or "readonly" in val.lower()) else "approver"
+                else:
+                    user = str(val)
+                    role = "approver"
+                return Operator(user, role=role)
         return None
 
     def _read_json_body(self) -> Optional[Dict[str, Any]]:
@@ -187,6 +225,11 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 sess_info = _SESSIONS.get(sess_id, {})
                 snapshot = dict(sess_info.get("last_state", {}))
             self._send_json({"session_id": sess_id, "state": snapshot})
+
+        elif path == "/api/audit-log":
+            with _AUDIT_LOG_LOCK:
+                events = list(_AUDIT_EVENTS)
+            self._send_json({"count": len(events), "audit_trail": events})
 
         else:
             file_path = resolve_static_path(path)
@@ -300,9 +343,20 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
             try:
                 if action == "RESUME":
+                    if getattr(operator, "role", "approver") == "viewer":
+                        self._send_json({
+                            "error": "Forbidden: Operator role 'viewer' does not have approval authority. Remediation requires an approver token."
+                        }, 403)
+                        return
+
                     approved = req_data.get("approved")
                     if not isinstance(approved, bool):
                         self._send_json({"error": "'approved' must be true or false"}, 400)
+                        return
+
+                    appr_id = req_data.get("approval_id")
+                    if appr_id and appr_id in _USED_APPROVAL_IDS:
+                        self._send_json({"error": f"Approval '{appr_id}' has already been consumed (anti-replay check failed)"}, 409)
                         return
 
                     pending = session_info.get("pending_approval")
@@ -310,13 +364,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         self._send_json({"error": "No pending HITL remediation checkpoint for this session"}, 400)
                         return
 
-                    appr_id = req_data.get("approval_id")
                     if not appr_id:
                         self._send_json({"error": "Missing required 'approval_id' in approval request"}, 400)
-                        return
-
-                    if appr_id in _USED_APPROVAL_IDS:
-                        self._send_json({"error": f"Approval '{appr_id}' has already been consumed (anti-replay check failed)"}, 409)
                         return
 
                     if appr_id != pending.get("approval_id"):
@@ -364,8 +413,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     notes = str(req_data.get("notes", f"Decision rendered by {operator}"))[:500]
                     resume_cmd = Command(resume={
                         "approved": approved,
-                        "dba_user": operator,
+                        "dba_user": str(operator),
                         "approval_id": appr_id,
+                        "approval_fingerprint": pending.get("approval_fingerprint"),
                         "target_action": pending.get("action"),
                         "target_sid": pending.get("target_sid"),
                         "notes": notes,
@@ -376,6 +426,20 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                             config={"configurable": {"thread_id": thread_id}},
                             resume_command=resume_cmd
                         )
+                    record_audit_event({
+                        "event_type": "HITL_REMEDIATION_APPROVAL",
+                        "operator": str(operator),
+                        "role": getattr(operator, "role", "approver"),
+                        "approval_id": appr_id,
+                        "approval_fingerprint": pending.get("approval_fingerprint"),
+                        "approved": approved,
+                        "action": pending.get("action"),
+                        "target_sid": pending.get("target_sid"),
+                        "target_serial": pending.get("target_serial"),
+                        "target_object": pending.get("target_object"),
+                        "is_remediated": state.get("is_remediated"),
+                        "remediation_result": state.get("remediation_result")
+                    })
                 else:
                     raw_logs = SCENARIOS[scen_key]["logs"]
                     with _INVOKE_LOCK:
@@ -409,7 +473,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 "state": resp_state,
                 "interrupted": state.get("interrupted", False),
                 "interrupt_payload": state.get("interrupt_payload"),
-                "completed": state.get("completed", False)
+                "completed": state.get("completed", False),
+                "remediation_success": state.get("is_remediated", False)
             })
 
         else:
