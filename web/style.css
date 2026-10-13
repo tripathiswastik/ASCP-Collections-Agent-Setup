@@ -965,8 +965,12 @@ body.dark-theme {
   transition: opacity 0.2s;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .modal-overlay.hidden {
-  display: none;
+  display: none !important;
   opacity: 0;
 }
 
