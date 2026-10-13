@@ -86,11 +86,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const topologyText = document.getElementById('topologyText');
 
   // ETL Pipeline Cards
+  const stageCardStage1 = document.getElementById('stageCardStage1');
   const stage1Count = document.getElementById('stage1Count');
   const stage1Foot = document.getElementById('stage1Foot');
+  const stageCardStage2 = document.getElementById('stageCardStage2');
   const stage2Count = document.getElementById('stage2Count');
   const stage2Foot = document.getElementById('stage2Foot');
-  const stageCardStage2 = document.getElementById('stageCardStage2');
 
   // Agent Console & Action Buttons
   const agentConsoleBody = document.getElementById('agentConsoleBody');
@@ -339,19 +340,45 @@ document.addEventListener('DOMContentLoaded', () => {
       const dot = stStatusPill.querySelector('.pulse-dot');
       if (reg.st_status === -1) {
         dot.className = 'pulse-dot stalled';
-        stageCardStage2.classList.add('active-blocked');
-        stage2Foot.className = 'stage-status-foot error';
-        stage2Foot.textContent = 'STALLED (Blockage Detected)';
       } else if (reg.st_status === 0) {
         dot.className = 'pulse-dot green';
-        stageCardStage2.classList.remove('active-blocked');
-        stage2Foot.className = 'stage-status-foot success';
-        stage2Foot.textContent = 'ODS Loaded';
+      } else {
+        dot.className = 'pulse-dot stalled';
       }
 
       if (data.stages && data.stages.length >= 2) {
-        stage1Count.textContent = data.stages[0].processed_count.toLocaleString();
-        stage2Count.textContent = data.stages[1].processed_count.toLocaleString();
+        const s1 = data.stages[0];
+        const s2 = data.stages[1];
+        if (stage1Count) stage1Count.textContent = s1.processed_count.toLocaleString();
+        if (stage2Count) stage2Count.textContent = s2.processed_count.toLocaleString();
+
+        if (stageCardStage1 && stage1Foot) {
+          if (s1.status === 'FAILED') {
+            stageCardStage1.classList.add('active-blocked');
+            stage1Foot.className = 'stage-status-foot error';
+            stage1Foot.textContent = 'STALLED (Snapshot Old / Extraction)';
+          } else {
+            stageCardStage1.classList.remove('active-blocked');
+            stage1Foot.className = 'stage-status-foot success';
+            stage1Foot.textContent = 'Extraction Complete';
+          }
+        }
+
+        if (stageCardStage2 && stage2Foot) {
+          if (s2.status === 'STALLED') {
+            stageCardStage2.classList.add('active-blocked');
+            stage2Foot.className = 'stage-status-foot error';
+            stage2Foot.textContent = 'STALLED (Blockage Detected)';
+          } else if (s2.status === 'PENDING') {
+            stageCardStage2.classList.remove('active-blocked');
+            stage2Foot.className = 'stage-status-foot pending';
+            stage2Foot.textContent = 'Pending Stage 1';
+          } else {
+            stageCardStage2.classList.remove('active-blocked');
+            stage2Foot.className = 'stage-status-foot success';
+            stage2Foot.textContent = 'ODS Loaded';
+          }
+        }
       }
     } catch (e) {
       console.error('Failed to refresh status', e);
@@ -867,44 +894,84 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function runAutonomousAgent() {
+    // 1. Immediately halt live log streaming if running
+    if (isStreaming) {
+      stopLiveLogStreaming();
+    }
+
     addConsoleLog('AGENT', 'Starting LangGraph 6-Step Autonomous Diagnostic Graph...');
     setActiveNode('nodeIngestion');
 
     btnRunDiagnosis.disabled = true;
-    btnRunDiagnosis.innerHTML = 'Analyzing...';
+    btnRunDiagnosis.innerHTML = `
+      <svg class="spinner" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
+        <path d="M12 2a10 10 0 0 1 10 10"></path>
+      </svg>
+      Analyzing...
+    `;
+
+    const selectedScenario = scenarioSelector ? scenarioSelector.value : 'ora_00054_mode6';
 
     try {
+      setActiveNode('nodeClassification');
+
       const res = await apiFetch('/api/diagnose', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'START' })
+        body: JSON.stringify({
+          action: 'START',
+          scenario_key: selectedScenario
+        })
       });
-      const data = await res.json();
-      activeSessionId = data.session_id;
 
-      currentSuperStep += 3;
-      currentTokenSpend += 0.0022;
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Server responded with HTTP ${res.status}`);
+      }
+
+      activeSessionId = data.session_id;
 
       // Update confidence meter if available
       if (data.state && data.state.confidence_score) {
         confidenceMeter.textContent = `${data.state.confidence_score.toFixed(1)}%`;
       }
-      updateMeters();
 
       // Render messages in console
       if (data.state && data.state.messages) {
         data.state.messages.forEach(m => {
-          addConsoleLog(m.role.toUpperCase(), m.content);
+          const role = (m.role || 'assistant').toUpperCase();
+          const content = m.content || '';
+          if (content.includes('[SIMULATED]') || content.toLowerCase().includes('remediation') || content.toLowerCase().includes('extended')) {
+            addConsoleLog('REMEDIATION', content);
+          } else {
+            addConsoleLog(role, content);
+          }
         });
       }
 
       // If HITL interrupt triggered
       if (data.interrupted && data.interrupt_payload) {
+        currentSuperStep = 5;
+        currentTokenSpend += 0.0022;
+        updateMeters();
         activePendingApproval = data.interrupt_payload;
         setActiveNode('nodeHitl');
         openHitlModal(data.interrupt_payload);
       } else {
+        // Fully autonomous resolution (e.g. Scenario 8: ORA-01555 low risk auto-remediated)
         setActiveNode('nodeServiceNow');
+        currentSuperStep = 10;
+        currentTokenSpend += 0.0035;
+        updateMeters();
+
+        if (data.remediation_success || (data.state && data.state.is_remediated)) {
+          addConsoleLog('REMEDIATION', 'Autonomous remediation completed successfully. ST_STATUS normalized to 0.');
+        }
+
+        // Refresh telemetry & lock tree so pipeline reflects normalized status
+        await refreshTelemetry();
+        await loadLockTree();
       }
 
       // Update ServiceNow Ticket Card if already created

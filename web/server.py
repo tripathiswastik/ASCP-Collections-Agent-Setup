@@ -276,8 +276,26 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/status":
             with _SERVER_LOCK:
                 scen_key = current_scenario_key
+                sess_info = _SESSIONS.get(_ACTIVE_SESSION_ID, {})
+                last_state = sess_info.get("last_state", {})
+                is_remediated = bool(last_state.get("is_remediated", False))
+
             scenario_info = SCENARIOS.get(scen_key, SCENARIOS["ora_00054_mode6"])
-            monitor = PipelineMonitor(simulated_scenario=scenario_info.get("lock_scenario", "stage2_stalled"))
+
+            # Map scenario stage & error state to simulated pipeline state
+            if is_remediated:
+                sim_scenario = "healthy"
+            elif scenario_info.get("st_status") == -1:
+                if "Stage 1" in scenario_info.get("stage", ""):
+                    sim_scenario = "stage1_stalled"
+                else:
+                    sim_scenario = "stage2_stalled"
+            elif scenario_info.get("st_status") == 2:
+                sim_scenario = "running_stage2"
+            else:
+                sim_scenario = scenario_info.get("lock_scenario", "healthy")
+
+            monitor = PipelineMonitor(simulated_scenario=sim_scenario)
             registry = monitor.get_instance_registry(instance_id=scenario_info["instance_id"])
             stages = monitor.get_pipeline_stages_telemetry()
             quarantine = monitor.get_staging_quarantine_records()
@@ -288,7 +306,8 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 "registry": vars(registry),
                 "stages": stages,
                 "quarantine_records": quarantine,
-                "is_simulation": getattr(monitor, "simulated", True)
+                "is_simulation": getattr(monitor, "simulated", True),
+                "is_remediated": is_remediated
             })
 
         elif path == "/api/scenarios":
@@ -430,6 +449,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     sess_id = sess_id or f"sess-{uuid.uuid4().hex[:8]}"
                     new_graph = create_ascp_diagnostic_graph()
                     scen_key = req_data.get("scenario_key") or current_scenario_key
+                    current_scenario_key = scen_key
                     thread_id = f"web-thread-{thread_counter}"
                     session_info = {
                         "graph": new_graph,
@@ -561,7 +581,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         tot_mttr = max(0.0, time.time() - session_info.get("created_at", time.time()))
                         GLOBAL_METRICS.record_resolution(mttr_seconds=tot_mttr, was_successful=True)
                 else:
-                    raw_logs = SCENARIOS[scen_key]["logs"]
+                    raw_logs = SCENARIOS.get(scen_key, SCENARIOS["ora_00054_mode6"])["logs"]
                     with _INVOKE_LOCK:
                         state = curr_graph.invoke(
                             initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": raw_logs},

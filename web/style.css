@@ -605,6 +605,34 @@ body.dark-theme {
   color: var(--accent-emerald);
 }
 
+.console-log-item.stream .log-speaker {
+  color: var(--accent-blue);
+}
+
+.console-log-item.log_in .log-speaker {
+  color: var(--accent-amber);
+}
+
+.console-log-item.assistant .log-speaker,
+.console-log-item.agent .log-speaker {
+  color: var(--accent-purple);
+}
+
+.console-log-item.error .log-speaker {
+  color: var(--accent-red);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+}
+
 .agent-control-bar {
   display: flex;
   gap: 0.75rem;
