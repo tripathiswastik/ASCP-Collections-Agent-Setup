@@ -13,43 +13,45 @@
 <body class="dark-theme">
   <!-- Top Navigation Bar -->
   <header class="app-header">
-    <div class="header-left">
-      <div class="logo-group">
-        <div class="logo-icon">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-          </svg>
+    <div class="header-inner">
+      <div class="header-left">
+        <div class="logo-group">
+          <div class="logo-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <div>
+            <h1 class="logo-title">ASCP Autonomous Control Plane</h1>
+            <span class="logo-subtitle">Oracle EBS Dual-Stage ETL Diagnostic Agent</span>
+          </div>
         </div>
-        <div>
-          <h1 class="logo-title">ASCP Autonomous Control Plane</h1>
-          <span class="logo-subtitle">Oracle EBS Dual-Stage ETL Diagnostic Agent</span>
+      </div>
+
+      <!-- System Telemetry Status Badges -->
+      <div class="header-center">
+        <div class="status-pill" id="stStatusPill">
+          <span class="pulse-dot stalled"></span>
+          <span class="pill-label">ST_STATUS:</span>
+          <strong id="stStatusText">LOAD_PROCESSING (2)</strong>
+        </div>
+        <div class="status-pill">
+          <span class="pill-label">Instance:</span>
+          <strong>PRD1 (1001)</strong>
+        </div>
+        <div class="status-pill">
+          <span class="pill-label">Topology:</span>
+          <strong id="topologyText">Centralized (DB Link)</strong>
         </div>
       </div>
-    </div>
 
-    <!-- System Telemetry Status Badges -->
-    <div class="header-center">
-      <div class="status-pill" id="stStatusPill">
-        <span class="pulse-dot stalled"></span>
-        <span class="pill-label">ST_STATUS:</span>
-        <strong id="stStatusText">LOAD_PROCESSING (2)</strong>
+      <!-- Scenario Switcher -->
+      <div class="header-right">
+        <label for="scenarioSelector" class="selector-label">Failure Scenario:</label>
+        <select id="scenarioSelector" class="scenario-dropdown">
+          <!-- Populated dynamically via JS -->
+        </select>
       </div>
-      <div class="status-pill">
-        <span class="pill-label">Instance:</span>
-        <strong>PRD1 (1001)</strong>
-      </div>
-      <div class="status-pill">
-        <span class="pill-label">Topology:</span>
-        <strong id="topologyText">Centralized (DB Link)</strong>
-      </div>
-    </div>
-
-    <!-- Scenario Switcher -->
-    <div class="header-right">
-      <label for="scenarioSelector" class="selector-label">Failure Scenario:</label>
-      <select id="scenarioSelector" class="scenario-dropdown">
-        <!-- Populated dynamically via JS -->
-      </select>
     </div>
   </header>
 
