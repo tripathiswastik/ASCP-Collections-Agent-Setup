@@ -95,6 +95,20 @@ jobs:
           ORACLE_TEST_USER: system
           ORACLE_TEST_PASSWORD: OraclePassword123!
         run: |
+          echo "Waiting for Oracle on localhost:1521..."
+          for i in $(seq 1 30); do
+            if timeout 1 bash -c "echo > /dev/tcp/localhost/1521" 2>/dev/null; then
+              echo "Oracle is accepting TCP connections"
+              break
+            fi
+            echo "Oracle not ready yet (attempt $i/30) - sleeping 10s"
+            sleep 10
+          done
+          if ! timeout 1 bash -c "echo > /dev/tcp/localhost/1521" 2>/dev/null; then
+            echo "ERROR: Oracle did not start within expected time" >&2
+            docker ps --no-trunc || true
+            exit 1
+          fi
           python scripts/wait_for_oracle.py
 
       - name: Run Real Oracle Live Integration Test (ORA-00054 Contention)
@@ -105,5 +119,6 @@ jobs:
           ORACLE_TEST_SERVICE: FREEPDB1
           ORACLE_TEST_USER: system
           ORACLE_TEST_PASSWORD: OraclePassword123!
+          RUN_REAL_ORACLE: "true"
         run: |
           python tests/test_oracle_live_integration.py

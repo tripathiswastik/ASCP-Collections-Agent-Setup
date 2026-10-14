@@ -11,6 +11,8 @@ import os
 import sys
 import unittest
 
+import pytest
+
 # Add workspace root to sys.path
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
@@ -18,6 +20,11 @@ if BASE_DIR not in sys.path:
 
 from ascp_agent.config import OracleConfig
 from ascp_agent.lock_engine import LockDiagnosticsEngine, OracleConnectionPool
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_REAL_ORACLE", "false").lower() != "true",
+    reason="Skipping live Oracle integration tests in CI by default"
+)
 
 
 def get_live_oracle_config() -> OracleConfig | None:
@@ -71,6 +78,9 @@ class TestOracleLiveIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        if os.getenv("RUN_REAL_ORACLE", "false").lower() != "true":
+            raise unittest.SkipTest("Skipping live Oracle integration tests in CI by default (set RUN_REAL_ORACLE=true)")
+
         if not is_oracle_live_available():
             raise unittest.SkipTest("Live Oracle database not accessible (skip for non-container CI runs)")
 
