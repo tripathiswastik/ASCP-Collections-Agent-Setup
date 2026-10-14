@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -1082,6 +1083,12 @@ def route_from_classification(state: AgentState) -> str:
         return "oracle_lock_node"
     return "rca_hypothesis_node"
 
+def _default_checkpointer() -> Any:
+    """Returns durable PostgresSaver if POSTGRES_DSN is configured, else lightweight MemorySaver."""
+    dsn = os.getenv("POSTGRES_DSN") or os.getenv("POSTGRES_CONNECTION_STRING")
+    return PostgresSaver(dsn=dsn) if dsn else MemorySaver()
+
+
 def create_ascp_diagnostic_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     """Builds and compiles the 6-step ASCP Diagnostic Control Plane StateGraph with Send support."""
     builder = StateGraph(AgentState)
@@ -1115,7 +1122,7 @@ def create_ascp_diagnostic_graph(checkpointer: Any | None = None) -> CompiledSta
     builder.add_edge("hitl_gate_node", "servicenow_node")
     builder.add_edge("servicenow_node", END)
 
-    return builder.compile(checkpointer=checkpointer or PostgresSaver())
+    return builder.compile(checkpointer=checkpointer or _default_checkpointer())
 
 def create_self_healing_validation_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
     """Builds and compiles dedicated self-healing Pydantic schema validation graph."""
@@ -1185,4 +1192,4 @@ def create_self_healing_validation_graph(checkpointer: Any | None = None) -> Com
     builder.add_edge("execute_remediation_node", END)
     builder.add_edge("fallback_escalation_node", END)
 
-    return builder.compile(checkpointer=checkpointer or PostgresSaver())
+    return builder.compile(checkpointer=checkpointer or _default_checkpointer())

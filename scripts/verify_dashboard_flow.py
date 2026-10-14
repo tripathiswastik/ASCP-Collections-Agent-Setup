@@ -19,8 +19,6 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from web.server import OPERATOR_TOKENS, ASCPDiagnosticHandler, ThreadedASCPDiagnosticServer
-
 TOKEN = "e2e-verification-approver-token"
 
 def ensure_server(host="127.0.0.1", port=8085):
@@ -34,6 +32,8 @@ def ensure_server(host="127.0.0.1", port=8085):
     except urllib.error.HTTPError as e:
         if e.code in (200, 401, 403):
             return None
+
+    from web.server import OPERATOR_TOKENS, ASCPDiagnosticHandler, ThreadedASCPDiagnosticServer
 
     OPERATOR_TOKENS[TOKEN] = {"user": "VerificationApprover", "role": "approver"}
     httpd = ThreadedASCPDiagnosticServer((host, port), ASCPDiagnosticHandler)

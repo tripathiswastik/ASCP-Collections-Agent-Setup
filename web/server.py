@@ -69,17 +69,27 @@ SESSION_TTL_SECONDS = 3600  # 1 hour
 _SESSIONS: dict[str, dict[str, Any]] = {}
 _ACTIVE_SESSION_ID: str = "default"
 thread_counter = 1
+_DEFAULT_SESSION_INITIALIZED = False
 
-# Initialize baseline default session
-_SESSIONS[_ACTIVE_SESSION_ID] = {
-    "graph": create_ascp_diagnostic_graph(),
-    "thread_id": "web-thread-1",
-    "scenario_key": current_scenario_key,
-    "session_id": _ACTIVE_SESSION_ID,
-    "pending_approval": None,
-    "created_at": time.time(),
-    "last_state": {}
-}
+
+def _init_default_session() -> None:
+    """Lazily initialize baseline default session on first server access or startup."""
+    global _DEFAULT_SESSION_INITIALIZED
+    if _DEFAULT_SESSION_INITIALIZED and _ACTIVE_SESSION_ID in _SESSIONS:
+        return
+    with _SERVER_LOCK:
+        if _DEFAULT_SESSION_INITIALIZED and _ACTIVE_SESSION_ID in _SESSIONS:
+            return
+        _SESSIONS[_ACTIVE_SESSION_ID] = {
+            "graph": create_ascp_diagnostic_graph(),
+            "thread_id": "web-thread-1",
+            "scenario_key": current_scenario_key,
+            "session_id": _ACTIVE_SESSION_ID,
+            "pending_approval": None,
+            "created_at": time.time(),
+            "last_state": {}
+        }
+        _DEFAULT_SESSION_INITIALIZED = True
 
 
 def _prune_expired_sessions() -> None:
@@ -316,6 +326,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        _init_default_session()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -438,6 +449,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         global current_scenario_key, _ACTIVE_SESSION_ID, thread_counter
+        _init_default_session()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -680,6 +692,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def run_server(port: int = 8085, host: str = "127.0.0.1"):
+    _init_default_session()
     active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
     active_tokens.update(OPERATOR_TOKENS)
     env_mode = os.environ.get("ASCP_ENV", "production").lower()
