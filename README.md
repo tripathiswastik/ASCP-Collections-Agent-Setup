@@ -205,11 +205,53 @@ python tests/eval_harness.py
 - **False-Kill Rate (Non-locking cases)**: 0.0%
 - **Brier Calibration Score**: 0.0050
 
-### 3. Run Live Oracle Container Integration Test (ORA-00054 Reproduction)
+### 3. Run Live Oracle Container Integration Test (ORA-00054 Contention)
+
+The live integration test reproduces real dual-session lock contention against a running Oracle Database or container:
+1. **Session A (Blocker)**: Acquires and holds `LOCK TABLE <ephemeral_table> IN EXCLUSIVE MODE` (Mode 6).
+2. **Session B (Victim)**: Attempts `LOCK TABLE ... NOWAIT` which triggers `ORA-00054: resource busy and acquire with NOWAIT specified`.
+3. **Lock Engine Introspection**: Triggers `LockDiagnosticsEngine` against live `V$SESSION`, `V$LOCK`, and `V$LOCKED_OBJECT` dynamic views, asserting the root blocker SID, lock mode (6), and table name are accurately identified.
+
+#### How to Run Locally
+
 ```bash
-# Runs against live/containerized Oracle Database when RUN_REAL_ORACLE=1:
-RUN_REAL_ORACLE=1 python tests/test_oracle_live_integration.py
+# 1. Spin up ephemeral Oracle Free container (Docker):
+docker run -d --name oracle-test -p 1521:1521 \
+  -e ORACLE_PASSWORD=SecretOraclePassword123! \
+  -e APP_USER=apps \
+  -e APP_USER_PASSWORD=SecretAppsPassword123! \
+  gvenzl/oracle-free:slim
+
+# 2. Wait for database listener to accept connections:
+ORACLE_TEST_USER=apps ORACLE_TEST_PASSWORD=SecretAppsPassword123! python scripts/wait_for_oracle.py
+
+# 3. Run the live integration test:
+RUN_REAL_ORACLE=true \
+ORACLE_TEST_HOST=localhost \
+ORACLE_TEST_PORT=1521 \
+ORACLE_TEST_SERVICE=FREEPDB1 \
+ORACLE_TEST_USER=apps \
+ORACLE_TEST_PASSWORD=SecretAppsPassword123! \
+pytest tests/test_oracle_live_integration.py
 ```
+
+#### Best Practices & Security Warnings
+- **Dedicated Test Schema (`apps`)**: Use a dedicated application test user (`apps`) with `CREATE TABLE` privileges rather than `SYSTEM` or `SYSDBA`. In containers, `APP_USER` and `APP_USER_PASSWORD` provision this automatically.
+- **Ephemeral Tables**: The test generates a uniquely named table (`TEST_MSC_DEM_<RANDOM_HEX>`) and cleans it up on teardown to avoid collisions or schema destruction.
+- **No Client Libraries Needed**: Powered by `python-oracledb` in Thin Mode (`mode="thin"`), requiring no Oracle Instant Client installation.
+- **Fail-Closed Safety**: The test requires explicit credentials (`ORACLE_TEST_PASSWORD` or `ORACLE_PASSWORD`); it never falls back to predictable hardcoded passwords.
+- **Never Run Against Production**: The test performs DDL (`CREATE/DROP TABLE`) and exclusive locks (`LOCK TABLE ... IN EXCLUSIVE MODE`). Run strictly against disposable container or staging sandboxes.
+
+#### Troubleshooting Tips
+- **`oracledb` ImportError**: Run `pip install oracledb` in your active virtual environment.
+- **Test Times Out Waiting for ORA-00054**:
+  - Verify container status (`docker logs -f oracle-test`). The `gvenzl/oracle-free:slim` image takes 1–3 minutes to initialize its pluggable database on first start.
+  - Query `V$LOCK` and `V$SESSION` to verify blocker SID acquired Mode 6 lock.
+  - Ensure the test user has `CREATE TABLE` and `SELECT_CATALOG_ROLE` (or query access to `V$SESSION`, `V$LOCK`, `V$LOCKED_OBJECT`).
+- **PDB Service Name**: The `gvenzl` container image defaults to `FREEPDB1`. Ensure `ORACLE_TEST_SERVICE` matches the active PDB name.
+
+#### Mapping to GitHub CI Workflow
+In `.github/workflows/ci.yml`, the `integration` job automatically spins up the `gvenzl/oracle-free:slim` service container, waits for TCP:1521 using `scripts/wait_for_oracle.py`, exports `RUN_REAL_ORACLE="true"` and `ORACLE_SIMULATION="false"`, and executes `tests/test_oracle_live_integration.py` in an isolated environment.
 
 ### 4. Run the CLI
 ```bash
