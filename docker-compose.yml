@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: ascp-diagnostic-agent
     restart: unless-stopped
-    expose:
-      - "8085"
+    ports:
+      - "8085:8085"
     environment:
       - PORT=8085
       - HOST=0.0.0.0

@@ -186,6 +186,29 @@ jobs:
         run: |
           docker compose up -d
           bash scripts/wait_for_container.sh ascp-diagnostic-agent 30
-          curl -fsS http://127.0.0.1:8085/health
+
+          MAX_TRIES=30
+          SLEEP_SEC=2
+          OK=0
+          for i in $(seq 1 $MAX_TRIES); do
+            if curl -fsS http://127.0.0.1:8085/health -m 2; then
+              echo "[+] HTTP health endpoint responded"
+              OK=1
+              break
+            fi
+            echo "Attempt $i/$MAX_TRIES: HTTP /health not reachable yet - sleeping $SLEEP_SEC"
+            sleep $SLEEP_SEC
+          done
+
+          if [ "$OK" -ne 1 ]; then
+            echo "ERROR: HTTP /health still unreachable after retries"
+            echo "docker compose ps:"
+            docker compose ps --no-trunc
+            echo "container logs (last 200 lines):"
+            docker compose logs --no-color --tail=200 ascp-diagnostic-agent || true
+            docker compose down
+            exit 1
+          fi
+
           docker compose ps
           docker compose down

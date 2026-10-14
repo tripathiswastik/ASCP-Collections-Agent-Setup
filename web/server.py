@@ -819,5 +819,5 @@ def run_server(port: int = 8085, host: str = "127.0.0.1"):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("PORT", "8085"))
-    host = os.getenv("HOST", "127.0.0.1")
+    host = sys.argv[2] if len(sys.argv) > 2 else os.getenv("HOST", "127.0.0.1")
     run_server(port, host)
