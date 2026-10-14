@@ -140,8 +140,10 @@ class ThreadedASCPDiagnosticServer(socketserver.ThreadingMixIn, socketserver.TCP
 
 
 class Operator(str):
-    """Operator identity carrying name and permissions role ('approver' vs 'viewer')."""
-    def __new__(cls, name: str, role: str = "approver"):
+    """Operator identity carrying name and permissions role ('approver' vs 'viewer').
+    Defaults strictly to 'viewer' (least-privilege / deny by default).
+    """
+    def __new__(cls, name: str, role: str = "viewer"):
         obj = super().__new__(cls, name)
         obj.name = name
         obj.role = role
@@ -519,9 +521,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
             try:
                 if action == "RESUME":
-                    if getattr(operator, "role", "approver") == "viewer":
+                    if getattr(operator, "role", None) != "approver":
                         self._send_json({
-                            "error": "Forbidden: Operator role 'viewer' does not have approval authority. Remediation requires an approver token."
+                            "error": "Forbidden: Operator role does not have approval authority. Remediation requires an explicit approver token."
                         }, 403)
                         return
 
@@ -605,7 +607,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     record_audit_event({
                         "event_type": "HITL_REMEDIATION_APPROVAL",
                         "operator": str(operator),
-                        "role": getattr(operator, "role", "approver"),
+                        "role": getattr(operator, "role", "viewer"),
                         "approval_id": appr_id,
                         "approval_fingerprint": pending.get("approval_fingerprint"),
                         "approved": approved,

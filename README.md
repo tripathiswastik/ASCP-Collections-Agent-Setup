@@ -3,12 +3,12 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Control Plane](https://img.shields.io/badge/Framework-LangGraph%20StateGraph-orange.svg)](https://langchain-ai.github.io/langgraph/)
+[![Control Plane](https://img.shields.io/badge/Architecture-LangGraph%20Pattern%20(Zero--Dep)-orange.svg)](ascp_agent/graph.py)
 [![Log Parsing](https://img.shields.io/badge/Engine-Drain%20Tree%20Parser-purple.svg)](https://github.com/logpai/logparser)
-[![Tests: 96/96](https://img.shields.io/badge/Tests-Passing%20(96%2F96)-brightgreen.svg)](tests/)
+[![Tests: 140/140](https://img.shields.io/badge/Tests-140%2F140%20Passing-brightgreen.svg)](tests/)
 [![Author](https://img.shields.io/badge/Author-Swastik%20Tripathi-blueviolet.svg)](https://github.com/tripathiswastik)
 
-An autonomous, stateful diagnostic control plane built to triage, diagnose, and remediate Oracle ASCP batch collection pipeline failures across dual-stage ETL architectures. Powered by **LangGraph**, **Drain algorithmic log parsing**, and **Oracle dynamic performance view lock introspection**.
+An autonomous, stateful diagnostic control plane built to triage, diagnose, and remediate Oracle ASCP batch collection pipeline failures across dual-stage ETL architectures. Implements the **LangGraph state machine pattern** (`StateGraph`, `Command`, `interrupt()`, reducers) with native Python zero-dependency resilience, **Drain algorithmic log parsing**, and **Oracle dynamic performance view lock introspection**.
 
 > **Note on Deployment Model:** This agent is designed **simulation-first for safe evaluation**, but contains fully hardened live adapter paths for Oracle Database (with RAC support), PostgreSQL state checkpointing, and ServiceNow ITSM. Live database errors fail closed loudly rather than being masked as simulations.
 
@@ -190,9 +190,10 @@ d:\ag-ai\ascp-diagnostic-agent/
 
 ## 🚀 Quickstart
 
-### 1. Run Complete Test Suite (96 Tests)
+### 1. Run Complete Self-Contained Test Suite (140 Passed, 1 Skipped)
 ```bash
-python tests/run_all_tests.py
+# Runs entire test suite including e2e scenarios and safety guardrails:
+pytest -q
 ```
 
 ### 2. Run Quantitative Evaluation Harness (12 Labeled Benchmark Cases)
@@ -206,8 +207,8 @@ python tests/eval_harness.py
 
 ### 3. Run Live Oracle Container Integration Test (ORA-00054 Reproduction)
 ```bash
-# Against local or CI Oracle Free container:
-python tests/test_oracle_live_integration.py
+# Runs against live/containerized Oracle Database when RUN_REAL_ORACLE=1:
+RUN_REAL_ORACLE=1 python tests/test_oracle_live_integration.py
 ```
 
 ### 4. Run the CLI
@@ -236,10 +237,30 @@ Operational metrics and Prometheus telemetry are available at:
 - JSON summary: `GET /api/metrics`
 - Prometheus text format: `GET /api/metrics?format=prometheus`
 
-### 6. Production Reverse Proxy & TLS Deployment
+### 6. Production Docker & TLS Reverse Proxy Deployment
+
+The included `docker-compose.yml` provides a production-grade deployment with an Nginx reverse proxy providing TLS termination and rate limiting.
+
+#### Step A: Generate TLS Certificates
+Generate self-signed testing certificates or place your CA-signed certificates into `deploy/certs/`:
 ```bash
-# Spin up ASCP Agent and Nginx TLS Reverse Proxy
-docker-compose up -d
+python deploy/generate_certs.py
+```
+
+#### Step B: Provision Operator Secrets
+Copy the secrets template and configure your production tokens:
+```bash
+cp config/secrets.json.example config/secrets.json
+```
+Edit `config/secrets.json` to assign strong random tokens for your DBA approvers and viewers.
+
+#### Step C: Build & Start Stack
+```bash
+docker-compose up -d --build
+```
+Verify container health:
+```bash
+docker-compose ps
 ```
 
 ---

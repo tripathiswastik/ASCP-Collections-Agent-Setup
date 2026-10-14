@@ -1,0 +1,3 @@
+# Ignore live secrets files
+secrets.json
+*.secret

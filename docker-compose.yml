@@ -11,13 +11,15 @@ services:
       - "8085"
     environment:
       - PORT=8085
+      - HOST=0.0.0.0
+      - ASCP_ENV=production
       - ASCP_SECRETS_FILE=/run/secrets/ascp_secrets.json
-      # Fallback token for local dev if secret file not mounted:
-      - ASCP_OPERATOR_TOKENS={"dev-token-998877":{"user":"dba_admin","role":"approver"}}
+      # Secure operator tokens must be supplied via secrets file or externally via environment:
+      - ASCP_OPERATOR_TOKENS=${ASCP_OPERATOR_TOKENS:-}
     volumes:
       - ./config/secrets.json:/run/secrets/ascp_secrets.json:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/api/status')"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8085/api/status"]
       interval: 15s
       timeout: 5s
       retries: 3

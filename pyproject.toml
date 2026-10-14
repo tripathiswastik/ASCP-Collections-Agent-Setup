@@ -41,3 +41,7 @@ include = ["ascp_agent*", "web*"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
+markers = [
+    "integration: marks tests as integration tests requiring live or ephemeral test server",
+    "oracle: marks tests requiring live Oracle DB connection",
+]

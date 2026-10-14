@@ -36,12 +36,20 @@ GOVERNANCE_RULES: dict[str, HITLGovernanceRule] = {
         description="Read-only text file parsing. Auto-runs without operator approval."
     ),
     "PURGE_STAGING": HITLGovernanceRule(
-        risk_tier="MEDIUM",
+        risk_tier="HIGH",
         action_type="Staging Interface Truncation",
         target_object="MSC_ST_*",
-        requires_mandatory_approval=False,
+        requires_mandatory_approval=True,
         requires_dry_run_validation=True,
-        description="Truncates temporary interface tables. Auto-runs if dry-run validation passes; pauses on schema conflict."
+        description="Mandatory HITL Gate. Truncates temporary interface tables (MSC_ST_*). Potentially destructive; requires explicit DBA sign-off."
+    ),
+    "PURGE_STAGING_NO_VALIDATION": HITLGovernanceRule(
+        risk_tier="HIGH",
+        action_type="Staging Interface Truncation (Forced)",
+        target_object="MSC_ST_*",
+        requires_mandatory_approval=True,
+        requires_dry_run_validation=True,
+        description="Mandatory HITL Gate. Forces truncation of temporary interface tables without validation. Destructive; requires explicit DBA sign-off."
     ),
     "RERUN_SNAPSHOT_FAST": HITLGovernanceRule(
         risk_tier="LOW",

@@ -28,6 +28,7 @@ from ascp_agent.diagnostic_tools import (
     get_default_adapter,
     validate_remediation_preconditions,
 )
+from ascp_agent.hitl_governance import HITLGovernanceEngine
 from ascp_agent.lock_engine import LockDiagnosticsEngine
 from ascp_agent.remediation import RemediationEngine, RemediationResult, format_utc_timestamp
 
@@ -201,6 +202,11 @@ class GuardedRemediationLayer:
         prop_id = f"PROP-{uuid.uuid4().hex[:10]}"
         fp = calculate_remediation_fingerprint(action, target)
 
+        gov_rule = HITLGovernanceEngine.evaluate_action_risk(action)
+        policy_mandated = gov_rule.requires_mandatory_approval or (gov_rule.risk_tier in ("HIGH", "MEDIUM"))
+        # Governance policy is authoritative: caller cannot downgrade policy-mandated approval
+        effective_requires_approval = True if policy_mandated else bool(requires_approval)
+
         proposal = RemediationProposal(
             proposal_id=prop_id,
             action=action,
@@ -214,10 +220,10 @@ class GuardedRemediationLayer:
             preconditions=pre_result,
             dry_run_success=dry_success,
             dry_run_details=dry_message,
-            requires_approval=requires_approval,
+            requires_approval=effective_requires_approval,
             created_at_unix=now_unix,
             expires_at_unix=now_unix + APPROVAL_TTL_SECONDS,
-            approval_status="APPROVED" if not requires_approval else "PENDING",
+            approval_status="APPROVED" if not effective_requires_approval else "PENDING",
         )
         self._active_proposals[prop_id] = proposal
         return proposal
@@ -258,10 +264,16 @@ class GuardedRemediationLayer:
         if not prop:
             raise RemediationGuardViolation(f"Proposal '{proposal_id}' not found.")
 
-        # Guard: Check Approval
-        if prop.requires_approval and prop.approval_status != "APPROVED":
+        # Guard: Authoritative policy check at execution boundary
+        gov_rule = HITLGovernanceEngine.evaluate_action_risk(prop.action)
+        authoritative_requires_approval = (
+            gov_rule.requires_mandatory_approval
+            or (gov_rule.risk_tier in ("HIGH", "MEDIUM"))
+            or prop.requires_approval
+        )
+        if authoritative_requires_approval and prop.approval_status != "APPROVED":
             raise RemediationGuardViolation(
-                f"Execution denied: Proposal '{proposal_id}' is not approved (status: {prop.approval_status})."
+                f"Execution denied: Proposal '{proposal_id}' for action '{prop.action}' mandates human authorization under enterprise governance policy (status: {prop.approval_status})."
             )
 
         # Guard: Check Expiration
