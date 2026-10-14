@@ -1044,27 +1044,46 @@ def hitl_gate_node(state: AgentState) -> dict:
             }
 
     res = executor(rem_engine, state, False)
+    is_rem = res.success if action != "INSPECT_LOCKS" else False
     return {
         "remediation_approved": True,
-        "is_remediated": res.success,
+        "is_remediated": is_rem,
         "remediation_result": vars(res),
         "messages": [AIMessage(content=res.message)]
     }
 
+RESET_ACTIONS = {"PURGE_STAGING", "PURGE_STAGING_NO_VALIDATION", "RESET_REGISTRY", "RECOVER_CRASHED_PIPELINE"}
+
 def servicenow_node(state: AgentState) -> dict:
     """Step 6: Enriched Incident Ticket Generation & ServiceNow ITSM Action."""
+    action = state.get("remediation_action")
+    mode = state.get("failure_mode") or state.get("detected_failure_mode")
+    if mode in ("UNKNOWN", "HEALTHY", None) and action in ("INSPECT_LOCKS", "NONE", None):
+        return {
+            "servicenow_incident": {"status": "SKIPPED", "message": "No failure detected."},
+            "recovery_command": "",
+            "is_remediated": False,
+            "messages": [AIMessage(content="No failure detected; no incident opened.")],
+        }
+
     sn_client = ServiceNowClient()
     incident_payload = sn_client.build_incident_payload_from_state(state)
     incident_res = sn_client.dispatch_incident(incident_payload)
-    inst_id = state.get("context", {}).get("instance_id", 1001)
-    inst_code = state.get("context", {}).get("instance_code", "PRD1")
-    recovery_cmd = format_recovery_command_block(instance_id=inst_id, instance_code=inst_code, validation="N")
+    recovery_cmd, suffix = "", ""
+    if action in RESET_ACTIONS:
+        inst = state.get("context", {})
+        recovery_cmd = format_recovery_command_block(
+            instance_id=inst.get("instance_id", 1001),
+            instance_code=inst.get("instance_code", "PRD1"),
+            validation="N"
+        )
+        suffix = " Automated Recovery Command staged for ST_STATUS reset."
 
     status = incident_res.get("status")
     if status == "FAILED":
         text = f"ServiceNow dispatch FAILED: {incident_res.get('error', 'Unknown error')}"
     else:
-        text = f"ServiceNow incident {status or 'CREATED'}: {incident_res.get('incident_number')} (SysID: {incident_res.get('sys_id')}). Automated Recovery Command staged for ST_STATUS reset."
+        text = f"ServiceNow incident {status or 'CREATED'}: {incident_res.get('incident_number')} (SysID: {incident_res.get('sys_id')}).{suffix}"
 
     return {
         "servicenow_incident": incident_res,

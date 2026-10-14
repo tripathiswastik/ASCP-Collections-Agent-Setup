@@ -25,7 +25,7 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 DEFAULT_BASE_URL = os.getenv("E2E_BASE_URL", "http://127.0.0.1:8085")
-DEFAULT_TOKEN = os.getenv("E2E_TOKEN", "dev-operator-secret-token")
+DEFAULT_TOKEN = os.getenv("E2E_TOKEN", "")
 DEFAULT_APPROVER = os.getenv("E2E_APPROVER_NAME", "DBA_LIVE_RUNNER")
 
 LOG_DIR = os.getenv("E2E_LOG_DIR", "logs")
@@ -305,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Safer ASCP live-run harness")
     p.add_argument("-c", "--count", type=int, default=5, help="Number of runs to execute (default: 5 for safety)")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Control plane base URL")
+    p.add_argument("--token", default=DEFAULT_TOKEN, help="Operator API token (or set E2E_TOKEN)")
     def str_to_bool(val: Any) -> bool:
         if isinstance(val, bool):
             return val
@@ -337,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     # Setup logging
     setup_logging(args.log_file + ".log")
     logger.info("Harness starting; log file=%s", args.log_file)
+
+    if not args.token:
+        logger.error("No API token provided. Pass --token or export E2E_TOKEN environment variable.")
+        return 2
 
     # Confirm if auto-approve requested
     confirm_dangerous_action(args.base_url, args.auto_approve, args.force)

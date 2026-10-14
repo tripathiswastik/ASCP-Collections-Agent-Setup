@@ -68,6 +68,7 @@ MAX_SESSIONS = 50
 SESSION_TTL_SECONDS = 3600  # 1 hour
 _SESSIONS: dict[str, dict[str, Any]] = {}
 _ACTIVE_SESSION_ID: str = "default"
+_OPERATOR_SESSIONS: dict[str, str] = {}
 thread_counter = 1
 _DEFAULT_SESSION_INITIALIZED = False
 
@@ -183,7 +184,9 @@ def record_audit_event(event: dict[str, Any]) -> dict[str, Any]:
                 log_path = os.path.join(audit_dir, "remediation_audit.jsonl")
             if audit_dir:
                 os.makedirs(audit_dir, exist_ok=True)
-            with open(log_path, "a", encoding="utf-8") as f:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            fd = os.open(log_path, flags, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
         except OSError as exc:
             logger.warning("Failed to append remediation audit event: %s", exc)
@@ -338,8 +341,10 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             with _SERVER_LOCK:
-                scen_key = current_scenario_key
-                sess_info = _SESSIONS.get(_ACTIVE_SESSION_ID, {})
+                op_sess_id = _OPERATOR_SESSIONS.get(str(operator))
+                op_sess = _SESSIONS.get(op_sess_id) if op_sess_id else None
+                scen_key = (op_sess.get("scenario_key") if op_sess else None) or current_scenario_key
+                sess_info = op_sess or _SESSIONS.get(_ACTIVE_SESSION_ID, {})
                 last_state = sess_info.get("last_state", {})
                 is_remediated = bool(last_state.get("is_remediated", False))
 
@@ -383,7 +388,9 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
         elif path == "/api/locks":
             with _SERVER_LOCK:
-                scen_key = current_scenario_key
+                op_sess_id = _OPERATOR_SESSIONS.get(str(operator))
+                op_sess = _SESSIONS.get(op_sess_id) if op_sess_id else None
+                scen_key = (op_sess.get("scenario_key") if op_sess else None) or current_scenario_key
             scenario_info = SCENARIOS.get(scen_key, SCENARIOS["ora_00054_mode6"])
             engine = LockDiagnosticsEngine(simulated_scenario=scenario_info.get("lock_scenario", "ora_00054_mode6"))
             telemetry = engine.execute_hierarchical_lock_query()
@@ -406,6 +413,16 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         elif path == "/api/audit-log":
             with _AUDIT_LOG_LOCK:
                 events = list(_AUDIT_EVENTS)
+            if getattr(operator, "role", "viewer") != "approver":
+                redacted_events = []
+                for ev in events:
+                    copy_ev = dict(ev)
+                    if "approval_id" in copy_ev:
+                        copy_ev["approval_id"] = "[REDACTED]"
+                    if "approval_fingerprint" in copy_ev:
+                        copy_ev["approval_fingerprint"] = "[REDACTED]"
+                    redacted_events.append(copy_ev)
+                events = redacted_events
             self._send_json({"count": len(events), "audit_trail": events})
 
         elif path == "/api/metrics":
@@ -470,7 +487,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     _prune_expired_sessions()
                     current_scenario_key = key
                     thread_counter += 1
-                    sess_id = f"sess-{uuid.uuid4().hex[:8]}"
+                    sess_id = req_data.get("session_id") or f"sess-{uuid.uuid4().hex[:8]}"
                     new_graph = create_ascp_diagnostic_graph()
                     session_info = {
                         "graph": new_graph,
@@ -479,10 +496,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         "session_id": sess_id,
                         "pending_approval": None,
                         "created_at": time.time(),
-                        "last_state": {}
+                        "last_state": {},
+                        "operator": str(operator)
                     }
                     _SESSIONS[sess_id] = session_info
                     _ACTIVE_SESSION_ID = sess_id
+                    _OPERATOR_SESSIONS[str(operator)] = sess_id
                 self._send_json({"success": True, "loaded_scenario": SCENARIOS[key], "session_id": sess_id})
             else:
                 self._send_json({"error": "Unknown scenario"}, 400)
@@ -510,10 +529,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                 with _SERVER_LOCK:
                     _prune_expired_sessions()
                     thread_counter += 1
-                    sess_id = sess_id or f"sess-{uuid.uuid4().hex[:8]}"
+                    op_sess_id = _OPERATOR_SESSIONS.get(str(operator))
+                    op_sess = _SESSIONS.get(op_sess_id) if op_sess_id else None
+
+                    scen_key = req_data.get("scenario_key") or (op_sess.get("scenario_key") if op_sess else None) or current_scenario_key
+                    sess_id = sess_id or op_sess_id or f"sess-{uuid.uuid4().hex[:8]}"
                     new_graph = create_ascp_diagnostic_graph()
-                    scen_key = req_data.get("scenario_key") or current_scenario_key
-                    current_scenario_key = scen_key
                     thread_id = f"web-thread-{thread_counter}"
                     session_info = {
                         "graph": new_graph,
@@ -522,13 +543,16 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         "session_id": sess_id,
                         "pending_approval": None,
                         "created_at": time.time(),
-                        "last_state": {}
+                        "last_state": {},
+                        "operator": str(operator)
                     }
                     _SESSIONS[sess_id] = session_info
                     _ACTIVE_SESSION_ID = sess_id
+                    _OPERATOR_SESSIONS[str(operator)] = sess_id
             else:
                 with _SERVER_LOCK:
-                    sess_id = sess_id or _ACTIVE_SESSION_ID
+                    op_sess_id = _OPERATOR_SESSIONS.get(str(operator))
+                    sess_id = sess_id or op_sess_id or _ACTIVE_SESSION_ID
                     session_info = _SESSIONS.get(sess_id) if sess_id else None
 
                 if not session_info:

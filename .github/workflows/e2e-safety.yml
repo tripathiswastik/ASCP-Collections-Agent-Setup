@@ -51,12 +51,14 @@ jobs:
         run: |
           if [ -z "${BASE_URL}" ]; then
             echo "[*] No STAGING_BASE_URL secret provided; starting local control plane on port 8085..."
+            RANDOM_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+            ACTIVE_TOKEN="${E2E_TOKEN:-$RANDOM_TOKEN}"
             export ASCP_ENV="development"
-            export ASCP_DEV_TOKEN="${E2E_TOKEN:-dev-operator-secret-token}"
+            export ASCP_DEV_TOKEN="$ACTIVE_TOKEN"
             python web/server.py 8085 &
             sleep 3
             echo "TARGET_URL=http://127.0.0.1:8085" >> $GITHUB_ENV
-            echo "TARGET_TOKEN=${E2E_TOKEN:-dev-operator-secret-token}" >> $GITHUB_ENV
+            echo "TARGET_TOKEN=$ACTIVE_TOKEN" >> $GITHUB_ENV
           else
             echo "[*] Using external STAGING_BASE_URL: ${BASE_URL}"
             echo "TARGET_URL=${BASE_URL}" >> $GITHUB_ENV

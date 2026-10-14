@@ -21,7 +21,7 @@ from typing import Any
 logger = logging.getLogger("ascp.e2e_scenarios")
 
 DEFAULT_BASE_URL = os.environ.get("E2E_BASE_URL", "http://127.0.0.1:8085")
-DEFAULT_TOKEN = os.environ.get("ASCP_DEV_TOKEN") or os.environ.get("E2E_TOKEN", "dev-operator-secret-token")
+DEFAULT_TOKEN = os.environ.get("ASCP_DEV_TOKEN") or os.environ.get("E2E_TOKEN", "")
 DEFAULT_APPROVER = os.environ.get("E2E_APPROVER_NAME", "DBA_E2E_OPERATOR")
 
 
@@ -293,6 +293,11 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     setup_logging()
+
+    if not args.token:
+        logger.error("No API token provided. Pass --token or export ASCP_DEV_TOKEN / E2E_TOKEN.")
+        return 2
+
     confirm_dangerous_action(args.base_url, args.auto_approve, args.force)
 
     return run_scenarios(

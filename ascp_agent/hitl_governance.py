@@ -100,12 +100,12 @@ GOVERNANCE_RULES: dict[str, HITLGovernanceRule] = {
         description="Mandatory HITL Gate. Resets ST_STATUS registry flag to 0 (IDLE) following abnormal collection crash. Requires explicit DBA sign-off."
     ),
     "EXTEND_UNDO_RETENTION": HITLGovernanceRule(
-        risk_tier="LOW",
+        risk_tier="MEDIUM",
         action_type="Dynamic Parameter Adjustment",
         target_object="V$PARAMETER.UNDO_RETENTION",
-        requires_mandatory_approval=False,
+        requires_mandatory_approval=True,
         requires_dry_run_validation=False,
-        description="Non-destructive dynamic parameter increase to eliminate ORA-01555 snapshot too old stalls."
+        description="Mandatory HITL Gate. Instance-wide parameter change extending UNDO_RETENTION (sec) for ORA-01555 snapshot too old prevention; requires explicit DBA sign-off."
     ),
     "EXTEND_TABLESPACE": HITLGovernanceRule(
         risk_tier="MEDIUM",
