@@ -96,8 +96,20 @@ def validate_operator_tokens(tokens: dict[str, Any], is_production: bool = True)
     return validated
 
 
+def _load_operator_tokens_from_env() -> dict[str, Any]:
+    raw = os.environ.get("ASCP_OPERATOR_TOKENS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning("Failed to parse ASCP_OPERATOR_TOKENS from environment: %s", exc)
+        return {}
+
+
 # Initial JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
-OPERATOR_TOKENS: dict[str, Any] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
+OPERATOR_TOKENS: dict[str, Any] = _load_operator_tokens_from_env()
 
 # Concurrency & request safety limits
 MAX_BODY_BYTES = 64 * 1024

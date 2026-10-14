@@ -175,7 +175,7 @@ jobs:
           with open('config/secrets.json', 'w') as f:
               json.dump(data, f, indent=2)
           "
-          chmod 600 config/secrets.json
+          chmod 644 config/secrets.json
 
       - name: Build Docker Containers
         run: |

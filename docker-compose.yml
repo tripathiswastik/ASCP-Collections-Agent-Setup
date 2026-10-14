@@ -15,7 +15,7 @@ services:
       - ASCP_ENV=production
       - ASCP_SECRETS_FILE=/run/secrets/ascp_secrets.json
       # Secure operator tokens must be supplied via secrets file or externally via environment:
-      - ASCP_OPERATOR_TOKENS=${ASCP_OPERATOR_TOKENS:-}
+      - ASCP_OPERATOR_TOKENS=${ASCP_OPERATOR_TOKENS:-{}}
     volumes:
       - ./config/secrets.json:/run/secrets/ascp_secrets.json:ro
     healthcheck:

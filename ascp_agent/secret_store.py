@@ -44,7 +44,9 @@ class EnvSecretProvider(SecretProvider):
         return os.environ.get(key, default)
 
     def get_operator_tokens(self) -> dict[str, str]:
-        raw = os.environ.get(self.token_env_var, "{}")
+        raw = os.environ.get(self.token_env_var, "").strip()
+        if not raw:
+            return {}
         try:
             tokens = json.loads(raw)
             if isinstance(tokens, dict):

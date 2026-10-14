@@ -35,7 +35,8 @@ COPY pyproject.toml .
 # Create non-root dedicated system user and secure directories
 RUN useradd -u 10001 -m -s /bin/sh appuser \
     && mkdir -p /app/logs /run/secrets \
-    && chown -R appuser:appuser /app /run/secrets
+    && chown -R appuser:appuser /app /run/secrets \
+    && chmod 755 /run/secrets
 
 USER appuser
 
