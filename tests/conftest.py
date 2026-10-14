@@ -122,5 +122,12 @@ try:
     def agent_state():
         return dict(SAMPLE_AGENT_STATE)
 
+    @pytest.fixture(autouse=True)
+    def force_offline_mode(monkeypatch):
+        """Guarantees tests execute in offline simulation mode without accidental live DB calls."""
+        monkeypatch.setenv("DISABLE_EXTERNAL_CALLS", "1")
+        monkeypatch.setenv("FORCE_SIMULATION_MODE", "1")
+        yield
+
 except ImportError:
     pass

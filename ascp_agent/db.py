@@ -205,8 +205,8 @@ class OracleConnectionPool:
                             is_simulated=False
                         )
             except Exception as exc:
-                logger.exception("Live Oracle query failed")
-                raise OracleQueryError("Live Oracle query failed") from exc
+                logger.warning("Live Oracle query failed: %s", exc)
+                raise OracleQueryError(f"Live Oracle query failed: {exc}") from exc
 
         # Fallback simulation result
         elapsed = (time.time() - start_time) * 1000.0

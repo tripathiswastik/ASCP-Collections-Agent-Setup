@@ -10,6 +10,9 @@ jobs:
   unit:
     name: Unit Tests & Lint (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    env:
+      DISABLE_EXTERNAL_CALLS: "1"
+      FORCE_SIMULATION_MODE: "1"
     strategy:
       fail-fast: false
       matrix:

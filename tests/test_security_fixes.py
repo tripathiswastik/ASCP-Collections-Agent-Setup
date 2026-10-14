@@ -166,11 +166,19 @@ def test_undo_check_is_not_a_stub_in_live_mode():
 
 
 def test_query_failure_is_not_masked_as_simulation(monkeypatch=None):
+    from contextlib import contextmanager
+
     from ascp_agent.db import OracleConnectionPool
     pool = OracleConnectionPool()
+
+    @contextmanager
+    def _failing_conn():
+        raise RuntimeError("db down")
+        yield
+
     if monkeypatch:
         monkeypatch.setattr(OracleConnectionPool, "is_simulation", property(lambda self: False))
-        monkeypatch.setattr(pool, "get_connection", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+        monkeypatch.setattr(pool, "get_connection", _failing_conn)
         with pytest.raises(Exception):
             pool.execute_query("SELECT 1 FROM DUAL")
     else:
@@ -178,9 +186,6 @@ def test_query_failure_is_not_masked_as_simulation(monkeypatch=None):
         orig_get_conn = pool.get_connection
         try:
             OracleConnectionPool.is_simulation = property(lambda self: False)
-            def _failing_conn():
-                raise RuntimeError("db down")
-                yield
             pool.get_connection = _failing_conn
             with pytest.raises(Exception):
                 pool.execute_query("SELECT 1 FROM DUAL")

@@ -37,6 +37,10 @@ load_env_file()
 
 
 def _resolve_use_simulation() -> bool:
+    if os.getenv("ORACLE_SIMULATION", "").lower() in ("false", "0", "no"):
+        return False
+    if os.getenv("FORCE_SIMULATION_MODE") == "1" or os.getenv("DISABLE_EXTERNAL_CALLS") == "1":
+        return True
     if "USE_MOCK_DB" in os.environ:
         return os.getenv("USE_MOCK_DB", "").lower() in ("true", "1", "yes")
     return os.getenv("ORACLE_SIMULATION", "true").lower() in ("true", "1", "yes")
