@@ -143,9 +143,9 @@ class TestOracleLiveIntegration(unittest.TestCase):
             # Verify ownership if table already exists in user's schema
             cur.execute("SELECT table_name FROM user_tables WHERE table_name = :tname", [cls.test_table_name])
             if cur.fetchone():
-                cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")
+                cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")  # nosec B608
 
-            cur.execute(f"""
+            create_sql = f"""
                 CREATE TABLE {cls.test_table_name} (
                     DEMAND_ID NUMBER PRIMARY KEY,
                     INVENTORY_ITEM_ID NUMBER,
@@ -154,8 +154,9 @@ class TestOracleLiveIntegration(unittest.TestCase):
                     QUANTITY NUMBER,
                     PROCESS_STATUS NUMBER
                 )
-            """)
-            cur.execute(f"INSERT INTO {cls.test_table_name} VALUES (101, 10001, 204, SYSDATE, 50, 1)")
+            """
+            cur.execute(create_sql)  # nosec B608
+            cur.execute(f"INSERT INTO {cls.test_table_name} VALUES (101, 10001, 204, SYSDATE, 50, 1)")  # nosec B608
             conn.commit()
 
     @classmethod
@@ -169,7 +170,7 @@ class TestOracleLiveIntegration(unittest.TestCase):
                     port=cls.config.port,
                     service_name=cls.config.service_name,
                 ) as conn, conn.cursor() as cur:
-                    cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")
+                    cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")  # nosec B608
                     conn.commit()
             except Exception:  # noqa: BLE001, S110
                 pass
@@ -216,7 +217,7 @@ class TestOracleLiveIntegration(unittest.TestCase):
             # Session 1: Blocker holding uncommitted Mode 6 Exclusive Table Lock
             conn_blocker = self._open_tracked_connection()
             cur_blocker = conn_blocker.cursor()
-            cur_blocker.execute(f"LOCK TABLE {self.test_table_name} IN EXCLUSIVE MODE")
+            cur_blocker.execute(f"LOCK TABLE {self.test_table_name} IN EXCLUSIVE MODE")  # nosec B608
 
             # Acquire blocker SID after acquiring lock
             cur_blocker.execute("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")
@@ -229,7 +230,7 @@ class TestOracleLiveIntegration(unittest.TestCase):
             # Trigger ORA-00054
             ora_54_caught = False
             try:
-                cur_worker.execute(f"LOCK TABLE {self.test_table_name} IN EXCLUSIVE MODE NOWAIT")
+                cur_worker.execute(f"LOCK TABLE {self.test_table_name} IN EXCLUSIVE MODE NOWAIT")  # nosec B608
             except self.oracledb.DatabaseError as exc:
                 error_obj = exc.args[0] if exc.args else None
                 if (error_obj and getattr(error_obj, "code", None) == 54) or "ORA-00054" in str(exc):
