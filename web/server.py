@@ -41,6 +41,61 @@ from ascp_agent.state import Command
 PUBLIC_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = PUBLIC_DIR
 
+VALID_OPERATOR_ROLES = {"approver", "viewer"}
+PLACEHOLDER_TOKEN_PATTERNS = (
+    "replace_with",
+    "replace-with",
+    "placeholder",
+    "changeme",
+    "dev-operator-secret-token",
+    "your_token",
+    "your-token",
+    "example-token",
+    "rebrand_me",
+)
+
+
+def validate_operator_tokens(tokens: dict[str, Any], is_production: bool = True) -> dict[str, Any]:
+    """Validate operator tokens and roles.
+    Rejects placeholder values and enforces valid role assignments.
+    """
+    validated: dict[str, Any] = {}
+    for tok, meta in tokens.items():
+        tok_clean = str(tok).strip()
+        tok_lower = tok_clean.lower()
+        if any(ph in tok_lower for ph in PLACEHOLDER_TOKEN_PATTERNS):
+            raise ValueError(
+                f"CRITICAL SECURITY CONFIGURATION ERROR: Placeholder token '{tok_clean[:20]}...' detected. "
+                "Unchanged placeholder credentials from example configurations are rejected at startup."
+            )
+        if isinstance(meta, dict):
+            role = meta.get("role")
+            if role not in VALID_OPERATOR_ROLES:
+                raise ValueError(
+                    f"CRITICAL SECURITY CONFIGURATION ERROR: Invalid role '{role}' assigned to token '{tok_clean[:8]}...'. "
+                    f"Permitted roles are: {sorted(VALID_OPERATOR_ROLES)}"
+                )
+            user = meta.get("user")
+            if not user:
+                raise ValueError(
+                    f"CRITICAL SECURITY CONFIGURATION ERROR: Missing user identity for token '{tok_clean[:8]}...'."
+                )
+            validated[tok_clean] = meta
+        elif isinstance(meta, str):
+            user = meta.strip()
+            if not user:
+                raise ValueError(
+                    f"CRITICAL SECURITY CONFIGURATION ERROR: Empty user name for token '{tok_clean[:8]}...'."
+                )
+            role = "approver" if "approver" in user.lower() else "viewer"
+            validated[tok_clean] = {"user": user, "role": role}
+        else:
+            raise TypeError(
+                f"CRITICAL SECURITY CONFIGURATION ERROR: Invalid metadata structure for token '{tok_clean[:8]}...'."
+            )
+    return validated
+
+
 # Initial JSON map of token -> operator name, e.g. {"s3cr3t-token": "alice"}
 OPERATOR_TOKENS: dict[str, Any] = json.loads(os.environ.get("ASCP_OPERATOR_TOKENS", "{}"))
 
@@ -329,9 +384,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        _init_default_session()
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+
+        if path in ("/health", "/healthz"):
+            self._send_json({"status": "healthy", "service": "ascp-diagnostic-agent", "timestamp": time.time()})
+            return
 
         if path.startswith("/api/"):
             operator = self._authenticate()
@@ -736,6 +794,12 @@ def run_server(port: int = 8085, host: str = "127.0.0.1"):
         print(f"[+] Dev operator token (this run only): {dev_token}")
         OPERATOR_TOKENS[dev_token] = {"user": "local-developer", "role": "approver"}
         active_tokens[dev_token] = {"user": "local-developer", "role": "approver"}
+
+    # Enforce strict validation: reject placeholder tokens and verify roles
+    validated = validate_operator_tokens(active_tokens, is_production=not is_dev)
+    OPERATOR_TOKENS.clear()
+    OPERATOR_TOKENS.update(validated)
+
     with ThreadedASCPDiagnosticServer((host, port), ASCPDiagnosticHandler) as httpd:
         print(f"[+] Multi-Threaded ASCP Diagnostic Dashboard running on http://{host}:{port}")
         httpd.serve_forever()

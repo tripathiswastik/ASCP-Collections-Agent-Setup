@@ -144,3 +144,56 @@ jobs:
           ORACLE_SIMULATION: "false"
         run: |
           python tests/test_oracle_live_integration.py
+
+  docker:
+    name: Docker Build & Compose Health Check
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Provision Self-Signed TLS Certificates
+        run: |
+          python deploy/generate_certs.py
+
+      - name: Configure Secure Non-Placeholder Secrets
+        run: |
+          mkdir -p config
+          python -c "
+          import json, secrets
+          appr_token = 'tok-appr-' + secrets.token_hex(16)
+          view_token = 'tok-view-' + secrets.token_hex(16)
+          data = {
+              'operator_tokens': {
+                  appr_token: {'user': 'ci_approver', 'role': 'approver'},
+                  view_token: {'user': 'ci_viewer', 'role': 'viewer'}
+              },
+              'oracle': {'user': 'APPS', 'password': secrets.token_urlsafe(16), 'dsn': 'localhost:1521/FREEPDB1'},
+              'servicenow': {'instance_url': 'https://ci.service-now.com', 'user': 'ci_svc', 'password': secrets.token_urlsafe(16), 'assignment_group': 'DBA_Team'}
+          }
+          with open('config/secrets.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+          chmod 600 config/secrets.json
+
+      - name: Build Docker Containers
+        run: |
+          docker compose build
+
+      - name: Start Docker Compose Stack & Verify Health Check
+        run: |
+          docker compose up -d
+          echo "Waiting for container healthcheck..."
+          for i in $(seq 1 30); do
+            STATUS=\$(docker inspect --format='{{json .State.Health.Status}}' ascp-diagnostic-agent 2>/dev/null || echo '\"unknown\"')
+            echo "Attempt \$i: ascp-diagnostic-agent health = \$STATUS"
+            if [ "\$STATUS" = '\"healthy\"' ]; then
+              echo "Container healthcheck reported healthy!"
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8085/health
+          docker compose ps
+          docker compose down

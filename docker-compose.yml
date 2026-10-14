@@ -19,7 +19,7 @@ services:
     volumes:
       - ./config/secrets.json:/run/secrets/ascp_secrets.json:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:8085/api/status"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8085/health"]
       interval: 15s
       timeout: 5s
       retries: 3

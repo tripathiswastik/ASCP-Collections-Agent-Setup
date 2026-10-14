@@ -41,9 +41,8 @@ USER appuser
 
 EXPOSE 8085
 
-# Container healthcheck querying REST API status endpoint
 HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://127.0.0.1:8085/api/status || exit 1
+    CMD curl -f http://127.0.0.1:8085/health || exit 1
 
 ENTRYPOINT ["python", "web/server.py"]
 CMD ["8085", "0.0.0.0"]

@@ -260,9 +260,21 @@ def run_live_runs(
 
                 elapsed_ms = round((time.time() - run_start) * 1000, 1)
                 rec["elapsed_ms"] = elapsed_ms
-                rec["status"] = "PASS" if completed else "FAIL"
+
+                # Diagnostic success: graph successfully resolved failure mode & action
+                diag_success = bool(completed or (interrupted and rec.get("interrupt_payload", {}).get("approval_id")))
+                rec["diagnostic_success"] = diag_success
+
                 if completed:
+                    rec["status"] = "PASS"
                     success_count += 1
+                elif interrupted:
+                    rec["status"] = "NEEDS_APPROVAL"
+                    # In dry-run mode, awaiting approval is the intended safe terminal state
+                    if dry_run or not auto_approve:
+                        success_count += 1
+                else:
+                    rec["status"] = "FAIL"
 
                 logger.info(
                     "[%d/%d] %s | %6.1fms | Clusters=%d | HITL=%s | Remediated=%s | %s",
@@ -279,7 +291,12 @@ def run_live_runs(
             except Exception as e:
                 elapsed_ms = round((time.time() - run_start) * 1000, 1)
                 logger.exception("Run %d failed for scenario %s", run_count, scen_key)
-                rec.update({"status": "ERROR", "error": str(e), "elapsed_ms": elapsed_ms})
+                rec.update({
+                    "status": "ERROR",
+                    "diagnostic_success": False,
+                    "error": str(e),
+                    "elapsed_ms": elapsed_ms,
+                })
 
             # persist per-run record
             persist_record(log_file, rec)
@@ -287,12 +304,25 @@ def run_live_runs(
 
     total_duration = time.time() - start_time
     avg_latency = sum(r.get("elapsed_ms", 0.0) for r in records) / len(records) if records else 0.0
-    success_rate = (success_count / run_count * 100.0) if run_count > 0 else 0.0
+
+    completed_count = sum(1 for r in records if r.get("status") == "PASS")
+    needs_approval_count = sum(1 for r in records if r.get("status") == "NEEDS_APPROVAL")
+    error_count = sum(1 for r in records if r.get("status") in ("ERROR", "FAIL"))
+    diag_success_count = sum(1 for r in records if r.get("diagnostic_success", False))
+
+    diag_success_rate = (diag_success_count / run_count * 100.0) if run_count > 0 else 0.0
+    overall_success_rate = (success_count / run_count * 100.0) if run_count > 0 else 0.0
 
     summary = {
+        "execution_environment": "SIMULATION" if os.environ.get("USE_MOCK_DB", "True").lower() in ("true", "1") else "PRODUCTION_ORACLE",
         "total_runs": run_count,
         "success_count": success_count,
-        "success_rate_pct": round(success_rate, 1),
+        "completed_count": completed_count,
+        "needs_approval_count": needs_approval_count,
+        "error_count": error_count,
+        "diagnostic_success_count": diag_success_count,
+        "diagnostic_success_rate_pct": round(diag_success_rate, 1),
+        "overall_success_rate_pct": round(overall_success_rate, 1),
         "hitl_approvals": hitl_approvals,
         "avg_latency_ms": round(avg_latency, 1),
         "total_time_s": round(total_duration, 2),
