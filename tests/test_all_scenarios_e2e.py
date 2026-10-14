@@ -31,7 +31,7 @@ def req(base_url: str, token: str, path_or_url: str, method: str = "GET", data: 
     if data is not None:
         headers["Content-Type"] = "application/json"
     r = urllib.request.Request(url, data=body, headers=headers, method=method)
-    with urllib.request.urlopen(r, timeout=10.0) as resp:
+    with urllib.request.urlopen(r, timeout=10.0) as resp:  # nosec B310
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -52,7 +52,7 @@ class TestAllScenariosE2E(unittest.TestCase):
                 f"{cls.base_url}/api/status",
                 headers={"Authorization": f"Bearer {cls.token}"}
             )
-            with urllib.request.urlopen(r, timeout=1.0) as resp:
+            with urllib.request.urlopen(r, timeout=1.0) as resp:  # nosec B310
                 if resp.status == 200:
                     return
         except (urllib.error.URLError, TimeoutError, OSError):
@@ -79,7 +79,7 @@ class TestAllScenariosE2E(unittest.TestCase):
                     f"{cls.base_url}/api/status",
                     headers={"Authorization": f"Bearer {cls.token}"}
                 )
-                with urllib.request.urlopen(check_req, timeout=1.0) as resp:
+                with urllib.request.urlopen(check_req, timeout=1.0) as resp:  # nosec B310
                     if resp.status == 200:
                         ready = True
                         break

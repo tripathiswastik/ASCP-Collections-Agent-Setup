@@ -26,7 +26,7 @@ LOCK_MODE_MAPPING = {
     6: ("Exclusive (X)", "Exclusive Table Lock. Completely blocks MSCPDCP staging truncations and parallel worker writes.")
 }
 
-HIERARCHICAL_LOCK_SQL = """SELECT 
+HIERARCHICAL_LOCK_SQL = """SELECT
     LEVEL AS lock_depth,
     CONNECT_BY_ISLEAF AS is_blocked_leaf,
     s.sid,
@@ -45,12 +45,12 @@ FROM v$session s
 LEFT JOIN v$locked_object lo ON s.sid = lo.session_id
 LEFT JOIN dba_objects do     ON lo.object_id = do.object_id
 LEFT JOIN v$sql sq           ON s.sql_id = sq.sql_id
-WHERE s.module LIKE '%MSC%' 
+WHERE s.module LIKE '%MSC%'
    OR s.blocking_session IS NOT NULL
    OR s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
    OR s.sid IN (SELECT session_id FROM v$locked_object WHERE locked_mode >= 3)
 CONNECT BY PRIOR s.sid = s.blocking_session
-START WITH s.blocking_session IS NULL 
+START WITH s.blocking_session IS NULL
        AND (
            s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
            OR s.sid IN (SELECT session_id FROM v$locked_object WHERE locked_mode >= 3)
@@ -206,7 +206,7 @@ class LockDiagnosticsEngine:
 
             if not results:
                 # Direct fallback for ORA-00054 where the victim errored NOWAIT and is no longer queued
-                fallback_sql = """SELECT 
+                fallback_sql = """SELECT
                     1 AS lock_depth,
                     0 AS is_blocked_leaf,
                     s.sid,

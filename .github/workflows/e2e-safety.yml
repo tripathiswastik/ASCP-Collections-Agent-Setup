@@ -1,0 +1,73 @@
+name: e2e-safety-and-harness
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  lint_and_security:
+    name: Lint & Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 bandit
+      - name: Run flake8
+        run: |
+          flake8 .
+      - name: Run bandit (security scan)
+        run: |
+          bandit -r . -ll -n 10 -x ./.venv,./build,./dist
+
+  harness_dry_run:
+    name: Nightly Harness (dry-run)
+    runs-on: ubuntu-latest
+    needs: lint_and_security
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    env:
+      BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+      E2E_TOKEN: ${{ secrets.STAGING_E2E_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -e .
+      - name: Start local control plane if STAGING_BASE_URL secret not provided
+        run: |
+          if [ -z "${BASE_URL}" ]; then
+            echo "[*] No STAGING_BASE_URL secret provided; starting local control plane on port 8085..."
+            export ASCP_ENV="development"
+            export ASCP_DEV_TOKEN="${E2E_TOKEN:-dev-operator-secret-token}"
+            python web/server.py 8085 &
+            sleep 3
+            echo "TARGET_URL=http://127.0.0.1:8085" >> $GITHUB_ENV
+            echo "TARGET_TOKEN=${E2E_TOKEN:-dev-operator-secret-token}" >> $GITHUB_ENV
+          else
+            echo "[*] Using external STAGING_BASE_URL: ${BASE_URL}"
+            echo "TARGET_URL=${BASE_URL}" >> $GITHUB_ENV
+            echo "TARGET_TOKEN=${E2E_TOKEN}" >> $GITHUB_ENV
+          fi
+      - name: Run harness (dry-run, short)
+        run: |
+          python scripts/run_55_live_runs.py --count 3 --dry-run --base-url "$TARGET_URL" --token "$TARGET_TOKEN"
+      - name: Upload harness logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-logs
+          path: logs/*.jsonl

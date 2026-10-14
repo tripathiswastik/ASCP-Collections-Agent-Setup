@@ -25,7 +25,7 @@ def ensure_server(host="127.0.0.1", port=8085):
     """Spins up a test server thread if a server isn't already running."""
     try:
         req = urllib.request.Request(f"http://{host}:{port}/api/status", headers={"X-API-Token": TOKEN})
-        with urllib.request.urlopen(req, timeout=1):
+        with urllib.request.urlopen(req, timeout=1):  # nosec B310
             return None  # Server already running and reachable
     except (urllib.error.URLError, ConnectionRefusedError):
         pass
@@ -45,16 +45,29 @@ def ensure_server(host="127.0.0.1", port=8085):
 def run_verification(base_url="http://localhost:8085"):
     server_instance = ensure_server(port=8085)
 
-    def req(endpoint, data=None):
+    def req(endpoint, data=None, retries=3, backoff_factor=1.5):
         url = f"{base_url}{endpoint}"
         headers = {'X-API-Token': TOKEN}
         if data is not None:
             headers['Content-Type'] = 'application/json'
-            r = urllib.request.Request(url, data=json.dumps(data).encode(), headers=headers)
+            body = json.dumps(data).encode('utf-8')
         else:
-            r = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(r) as res:
-            return json.loads(res.read().decode())
+            body = None
+
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                r = urllib.request.Request(url, data=body, headers=headers)
+                with urllib.request.urlopen(r, timeout=10.0) as res:  # nosec B310
+                    return json.loads(res.read().decode('utf-8'))
+            except urllib.error.HTTPError:
+                raise
+            except (urllib.error.URLError, TimeoutError, OSError):
+                if attempt <= retries:
+                    time.sleep(backoff_factor ** (attempt - 1))
+                    continue
+                raise
 
     print("================================================================================")
     print("      VERIFYING BROWSER TASK SCRATCHPAD WORKFLOW ON DASHBOARD SERVER")

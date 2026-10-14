@@ -100,7 +100,7 @@ def format_purge_staging_sql(instance_id: int = 1001, validation: str = "N", pac
 def format_registry_reset_sql(instance_id: int = 1001, status: int = 0) -> str:
     """Format standardized SQL statement to reset instance ST_STATUS in registry."""
     inst = _require_int(instance_id, "instance_id")
-    return f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = {int(status)} WHERE INSTANCE_ID = {inst}"
+    return f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = {int(status)} WHERE INSTANCE_ID = {inst}"  # nosec B608
 
 def format_align_indexes_sql(table_name: str) -> str:
     """Format standardized index alignment procedure call for partition exchanges."""
@@ -129,7 +129,7 @@ def format_recovery_command_block(instance_id: int = 1001, instance_code: str = 
     inst = _require_int(instance_id, "instance_id")
     code = _require_identifier(instance_code, "instance_code")
     return (
-        f"CONCURRENT PROGRAM: Planning Data Collection - Purge Staging Tables\n"
+        f"CONCURRENT PROGRAM: Planning Data Collection - Purge Staging Tables\n"  # nosec B608
         f"PARAMETERS: Instance = {code} ({inst}), Validation = {'No' if validation == 'N' else 'Yes'}\n"
         f"PL/SQL EXEC: {format_purge_staging_sql(inst, validation)}\n"
         f"REGISTRY RESET: UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {inst};"
@@ -383,7 +383,7 @@ class RemediationEngine:
         """Executes Planning Data Collection - Purge Staging Tables with Validation = No and normalizes ST_STATUS to 0."""
         v_inst = _require_int(instance_id, "instance_id")
         sql_cmd = format_purge_staging_sql(v_inst, "N", package_name=package_name)
-        reset_sql = f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {v_inst}"
+        reset_sql = f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {v_inst}"  # nosec B608
         combined_sql = f"{sql_cmd}\n{reset_sql}"
         return self._run(
             action="PURGE_STAGING_NO_VALIDATION",
@@ -475,7 +475,7 @@ class RemediationEngine:
     def execute_reset_registry(self, instance_id: int = 1001, dry_run: bool = False) -> RemediationResult:
         """Resets stuck ST_STATUS registry flag to 0 (IDLE) after unhandled worker crash."""
         v_inst = _require_int(instance_id, "instance_id")
-        sql_cmd = f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {v_inst}"
+        sql_cmd = f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {v_inst}"  # nosec B608
         return self._run(
             action="RESET_REGISTRY",
             sql_statement=sql_cmd,

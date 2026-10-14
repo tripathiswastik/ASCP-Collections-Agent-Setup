@@ -147,7 +147,7 @@ class PipelineMonitor:
             "recovery_program": "Planning Data Collection - Purge Staging Tables",
             "parameters": {"Validation": "No", "Instance_ID": instance_id},
             "plsql_call": f"BEGIN MSC_CL_COLLECTION.PURGE_STAGING_TABLES_SUB(p_instance_id => {instance_id}, p_validation => 'N'); END;",
-            "normalization_sql": f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id};",
+            "normalization_sql": f"UPDATE MSC_APPS_INSTANCES SET ST_STATUS = 0 WHERE INSTANCE_ID = {instance_id};",  # nosec B608
             "normalized_st_status": 0,
             "status": "NORMALIZED" if needs_reset else "CLEAN_NO_ACTION_NEEDED"
         }

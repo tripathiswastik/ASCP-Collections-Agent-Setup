@@ -315,4 +315,3 @@ class TestSecurityFixes(unittest.TestCase):
 
     def test_kill_session_fails_closed_when_blocker_absent(self):
         test_kill_session_fails_closed_when_blocker_absent()
-

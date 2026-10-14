@@ -70,8 +70,10 @@ def http_req(
     while True:
         attempt += 1
         try:
+            if not url.startswith(("http://", "https://")):
+                raise ValueError(f"Unsupported protocol scheme in {url}")
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as he:
             # HTTP errors are unlikely to succeed on retry for 4xx, but may for 5xx
@@ -303,9 +305,27 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Safer ASCP live-run harness")
     p.add_argument("-c", "--count", type=int, default=5, help="Number of runs to execute (default: 5 for safety)")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL, help="Control plane base URL")
-    p.add_argument("--token", default=DEFAULT_TOKEN, help="Operator token")
-    p.add_argument("--dry-run", action="store_true", default=True, help="Do everything except submit RESUME approvals")
-    p.add_argument("--no-dry-run", dest="dry_run", action="store_false", help="Disable dry-run mode (allow approvals if --auto-approve provided)")
+    def str_to_bool(val: Any) -> bool:
+        if isinstance(val, bool):
+            return val
+        return str(val).lower() in ("true", "1", "yes", "y", "t")
+
+    p.add_argument(
+        "--dry-run",
+        nargs="?",
+        const=True,
+        default=True,
+        type=str_to_bool,
+        help="Dry run mode (do not post RESUME approvals)",
+    )
+    p.add_argument(
+        "--no-dry-run",
+        nargs="?",
+        const=False,
+        dest="dry_run",
+        type=lambda v: not str_to_bool(v),
+        help="Disable dry run mode",
+    )
     p.add_argument("--auto-approve", action="store_true", help="If set (and not dry-run), auto-post RESUME approvals when HITL is encountered")
     p.add_argument("--approver-name", default=DEFAULT_APPROVER, help="Name to include in approval payload (dba_user)")
     p.add_argument("--retries", type=int, default=3, help="Per-request retry count")
