@@ -182,18 +182,10 @@ jobs:
           docker compose build
 
       - name: Start Docker Compose Stack & Verify Health Check
+        shell: bash
         run: |
           docker compose up -d
-          echo "Waiting for container healthcheck..."
-          for i in $(seq 1 30); do
-            STATUS=\$(docker inspect --format='{{json .State.Health.Status}}' ascp-diagnostic-agent 2>/dev/null || echo '\"unknown\"')
-            echo "Attempt \$i: ascp-diagnostic-agent health = \$STATUS"
-            if [ "\$STATUS" = '\"healthy\"' ]; then
-              echo "Container healthcheck reported healthy!"
-              break
-            fi
-            sleep 2
-          done
+          bash scripts/wait_for_container.sh ascp-diagnostic-agent 30
           curl -fsS http://127.0.0.1:8085/health
           docker compose ps
           docker compose down
