@@ -53,13 +53,22 @@ class ConfigValidationError(RuntimeError, ValueError):
 
 @dataclass
 class OracleConfig:
-    host: str = field(default_factory=lambda: os.getenv("ORACLE_HOST", "ebs-db.corp.internal"))
-    port: int = field(default_factory=lambda: int(os.getenv("ORACLE_PORT", "1521")))
-    service_name: str = field(
-        default_factory=lambda: os.getenv("ORACLE_SERVICE_NAME") or os.getenv("ORACLE_SERVICE", "EBSPROD")
+    host: str = field(
+        default_factory=lambda: os.getenv("ORACLE_HOST") or os.getenv("ORACLE_TEST_HOST", "ebs-db.corp.internal")
     )
-    username: str = field(default_factory=lambda: os.getenv("ORACLE_USER", "APPS_DIAG"))
-    password: str = field(default_factory=lambda: os.getenv("ORACLE_PASSWORD", ""), repr=False)
+    port: int = field(
+        default_factory=lambda: int(os.getenv("ORACLE_PORT") or os.getenv("ORACLE_TEST_PORT", "1521"))
+    )
+    service_name: str = field(
+        default_factory=lambda: os.getenv("ORACLE_SERVICE_NAME") or os.getenv("ORACLE_SERVICE") or os.getenv("ORACLE_TEST_SERVICE", "EBSPROD")
+    )
+    username: str = field(
+        default_factory=lambda: os.getenv("ORACLE_USER") or os.getenv("ORACLE_TEST_USER", "APPS_DIAG")
+    )
+    password: str = field(
+        default_factory=lambda: os.getenv("ORACLE_PASSWORD") or os.getenv("ORACLE_TEST_PASSWORD", ""),
+        repr=False
+    )
     diagnostic_role: str = "SELECT_CATALOG_ROLE"
     # Principle of Least Privilege: Separate remediation credentials
     remediation_username: str = field(default_factory=lambda: os.getenv("ORACLE_REMEDIATION_USER", "APPS_REMEDIATE"))
