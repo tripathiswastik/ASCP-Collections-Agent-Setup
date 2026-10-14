@@ -134,4 +134,3 @@ def test_clean_release_archive_hygiene():
             assert "logs" not in parts, f"Forbidden logs folder in release: {name}"
             assert not name.endswith("/.env"), f"Forbidden .env in release: {name}"
             assert not name.endswith("config/secrets.json"), f"Forbidden secrets.json in release: {name}"
-
