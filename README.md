@@ -214,6 +214,17 @@ The live integration test reproduces real dual-session lock contention against a
 
 #### How to Run Locally
 
+##### Option A: Automated One-Liner via Docker Compose
+Runs Oracle Free and an isolated Python 3.12 tester container with automatic TCP wait and healthchecks:
+```bash
+# Build and run the test suite to completion, exiting with the test exit code:
+docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from tester
+
+# Tear down container stack and remove volumes when finished:
+docker compose -f docker-compose.test.yml down -v
+```
+
+##### Option B: Manual Container Setup
 ```bash
 # 1. Spin up ephemeral Oracle Free container (Docker):
 docker run -d --name oracle-test -p 1521:1521 \

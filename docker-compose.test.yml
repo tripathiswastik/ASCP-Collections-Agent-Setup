@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  oracle:
+    image: gvenzl/oracle-free:slim
+    container_name: oracle-free
+    environment:
+      ORACLE_PASSWORD: "${ORACLE_PASSWORD:-OraclePassword123!}"
+      APP_USER: "${ORACLE_TEST_USER:-apps}"
+      APP_USER_PASSWORD: "${ORACLE_TEST_PASSWORD:-AppsPassword123!}"
+    ports:
+      - "1521:1521"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "timeout 1 bash -c 'echo > /dev/tcp/127.0.0.1/1521' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  tester:
+    image: python:3.12-slim
+    container_name: ascp-tester
+    depends_on:
+      - oracle
+    volumes:
+      - ./:/workspace:cached
+    working_dir: /workspace
+    environment:
+      ORACLE_TEST_HOST: oracle
+      ORACLE_TEST_PORT: "1521"
+      ORACLE_TEST_SERVICE: "${ORACLE_TEST_SERVICE:-FREEPDB1}"
+      ORACLE_TEST_USER: "${ORACLE_TEST_USER:-apps}"
+      ORACLE_TEST_PASSWORD: "${ORACLE_TEST_PASSWORD:-AppsPassword123!}"
+      RUN_REAL_ORACLE: "true"
+      PYTHONUNBUFFERED: "1"
+    command: >
+      /bin/bash -lc "
+        set -e;
+        python -m pip install --upgrade pip;
+        pip install -r requirements.txt;
+        pip install oracledb;
+        pip install -e .;
+        echo 'Waiting for Oracle to be reachable...';
+        python scripts/wait_for_oracle.py;
+        echo 'Running ORA-00054 integration test...';
+        pytest -q tests/test_oracle_live_integration.py::TestOracleLiveIntegration::test_reproduce_ora_00054_and_isolate_root_blocker
+      "

@@ -75,6 +75,7 @@ REQUIRED_ENTRIES = [
     "web/app.js",
     "Dockerfile",
     "docker-compose.yml",
+    "docker-compose.test.yml",
     "config/secrets.json.example",
     "deploy/nginx.conf",
     "deploy/generate_certs.py",
