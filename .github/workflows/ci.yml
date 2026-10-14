@@ -57,6 +57,8 @@ jobs:
     name: Live Oracle Integration Test (Python 3.12)
     needs: unit
     runs-on: ubuntu-latest
+    env:
+      ORACLE_SIMULATION: "false"
 
     services:
       oracle:
@@ -123,5 +125,6 @@ jobs:
           ORACLE_TEST_USER: system
           ORACLE_TEST_PASSWORD: OraclePassword123!
           RUN_REAL_ORACLE: "true"
+          ORACLE_SIMULATION: "false"
         run: |
           python tests/test_oracle_live_integration.py

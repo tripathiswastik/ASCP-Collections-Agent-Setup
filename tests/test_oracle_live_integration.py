@@ -45,7 +45,8 @@ def get_live_oracle_config() -> OracleConfig | None:
         password=password,
         min_pool_size=1,
         max_pool_size=5,
-        pool_increment=1
+        pool_increment=1,
+        use_simulation=False,
     )
 
 

@@ -6,6 +6,7 @@ Runs-in: Pytest and unittest execution harnesses across local and CI environment
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -124,10 +125,11 @@ try:
 
     @pytest.fixture(autouse=True)
     def force_offline_mode(monkeypatch):
-        """Guarantees tests execute in offline simulation mode without accidental live DB calls or audit file pollution."""
-        monkeypatch.setenv("DISABLE_EXTERNAL_CALLS", "1")
-        monkeypatch.setenv("FORCE_SIMULATION_MODE", "1")
+        """Guarantees unit tests execute in offline simulation mode without accidental live DB calls or audit file pollution."""
         monkeypatch.setenv("ASCP_PERSIST_AUDIT_LOG", "false")
+        if os.getenv("RUN_REAL_ORACLE", "false").lower() != "true":
+            monkeypatch.setenv("DISABLE_EXTERNAL_CALLS", "1")
+            monkeypatch.setenv("FORCE_SIMULATION_MODE", "1")
         yield
 
 except ImportError:
