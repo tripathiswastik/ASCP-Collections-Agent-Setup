@@ -1,17 +1,27 @@
-"""Live Oracle Integration Test using Oracle Free Container (gvenzl/oracle-free).
+"""Live Oracle Integration Test using Oracle Container or Dedicated Test Instance.
 Reproduces real ORA-00054 (resource busy and acquire with NOWAIT specified)
 between two concurrent live database sessions, triggers LockDiagnosticsEngine
 against dynamic V$ views, and asserts the root blocker is accurately isolated.
+
+Safety & Hygiene Guarantees:
+1. Requires explicit test credentials (no insecure defaults to SYSTEM/default passwords).
+2. Uses ephemeral, uniquely named test tables to prevent destroying existing schema tables.
+3. Synchronizes configuration environment variables between test runner and config modules.
+4. Wraps connection and cursor lifecycles in strict try/finally blocks and per-test tearDown
+   to prevent leaking uncommitted blocker locks on failure.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 import time
 import unittest
+import uuid
+from typing import Any
 
 import pytest
 
@@ -23,19 +33,38 @@ if BASE_DIR not in sys.path:
 from ascp_agent.config import OracleConfig
 from ascp_agent.lock_engine import LockDiagnosticsEngine, OracleConnectionPool
 
+logger = logging.getLogger(__name__)
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_REAL_ORACLE", "false").lower() != "true",
-    reason="Skipping live Oracle integration tests in CI by default"
+    reason="Skipping live Oracle integration tests by default (set RUN_REAL_ORACLE=true with explicit credentials)",
 )
 
 
 def get_live_oracle_config() -> OracleConfig | None:
-    """Retrieve database connection settings from environment or defaults."""
-    host = os.environ.get("ORACLE_TEST_HOST", "localhost")
-    port = int(os.environ.get("ORACLE_TEST_PORT", "1521"))
-    service_name = os.environ.get("ORACLE_TEST_SERVICE", "FREEPDB1")
-    username = os.environ.get("ORACLE_TEST_USER", "system")
-    password = os.environ.get("ORACLE_TEST_PASSWORD", "OraclePassword123!")
+    """Retrieve database connection settings from environment.
+    Requires explicit credentials; rejects predictable default fallbacks.
+    Synchronizes environment variables so ascp_agent.config stays consistent.
+    """
+    username = os.environ.get("ORACLE_TEST_USER") or os.environ.get("ORACLE_USER")
+    password = os.environ.get("ORACLE_TEST_PASSWORD") or os.environ.get("ORACLE_PASSWORD")
+
+    # Fail-closed: require explicit credentials; do not default to SYSTEM or hardcoded passwords
+    if not username or not password:
+        return None
+
+    host = os.environ.get("ORACLE_TEST_HOST") or os.environ.get("ORACLE_HOST", "localhost")
+    port = int(os.environ.get("ORACLE_TEST_PORT") or os.environ.get("ORACLE_PORT", "1521"))
+    service_name = os.environ.get("ORACLE_TEST_SERVICE") or os.environ.get("ORACLE_SERVICE_NAME", "FREEPDB1")
+
+    # Synchronize configuration environment variables to avoid configuration mismatch
+    os.environ["ORACLE_USER"] = username
+    os.environ["ORACLE_PASSWORD"] = password
+    os.environ["ORACLE_HOST"] = host
+    os.environ["ORACLE_PORT"] = str(port)
+    os.environ["ORACLE_SERVICE_NAME"] = service_name
+    os.environ["ORACLE_TEST_USER"] = username
+    os.environ["ORACLE_TEST_PASSWORD"] = password
 
     return OracleConfig(
         host=host,
@@ -51,7 +80,7 @@ def get_live_oracle_config() -> OracleConfig | None:
 
 
 def is_oracle_live_available() -> bool:
-    """Probes if a live Oracle database is reachable."""
+    """Probes if a live Oracle database is reachable with provided credentials."""
     try:
         oracledb = importlib.import_module("oracledb")
     except ImportError:
@@ -68,7 +97,7 @@ def is_oracle_live_available() -> bool:
             host=cfg.host,
             port=cfg.port,
             service_name=cfg.service_name,
-            tcp_connect_timeout=2.0
+            tcp_connect_timeout=2.0,
         )
         conn.close()
         return True
@@ -79,154 +108,175 @@ def is_oracle_live_available() -> bool:
 class TestOracleLiveIntegration(unittest.TestCase):
     """End-to-end integration test validating Lock Engine against live Oracle instance."""
 
+    test_table_name: str = ""
+    config: OracleConfig | None = None
+    oracledb: Any = None
+
     @classmethod
     def setUpClass(cls):
         if os.getenv("RUN_REAL_ORACLE", "false").lower() != "true":
-            raise unittest.SkipTest("Skipping live Oracle integration tests in CI by default (set RUN_REAL_ORACLE=true)")
-
-        if not is_oracle_live_available():
-            raise unittest.SkipTest("Live Oracle database not accessible (skip for non-container CI runs)")
+            raise unittest.SkipTest("Skipping live Oracle integration tests by default (set RUN_REAL_ORACLE=true)")
 
         cls.config = get_live_oracle_config()
+        if not cls.config:
+            raise unittest.SkipTest(
+                "Live Oracle credentials not provided in environment. "
+                "Set ORACLE_USER/ORACLE_TEST_USER and ORACLE_PASSWORD/ORACLE_TEST_PASSWORD."
+            )
+
+        if not is_oracle_live_available():
+            raise unittest.SkipTest("Live Oracle database not accessible at configured endpoint.")
+
         cls.oracledb = importlib.import_module("oracledb")
 
-        # Setup dedicated test table
+        # Use an ephemeral, uniquely named test table to prevent destroying existing tables
+        cls.test_table_name = f"TEST_MSC_DEM_{uuid.uuid4().hex[:8].upper()}"
+
+        # Setup dedicated test table in current test user's schema
         with cls.oracledb.connect(
             user=cls.config.username,
             password=cls.config.password,
             host=cls.config.host,
             port=cls.config.port,
-            service_name=cls.config.service_name
+            service_name=cls.config.service_name,
         ) as conn, conn.cursor() as cur:
-            try:
-                cur.execute("DROP TABLE TEST_MSC_ST_DEMANDS PURGE")
-            except Exception:  # noqa: BLE001, S110 -- table may not exist yet on initial setup
-                pass
-            cur.execute("""
-                    CREATE TABLE TEST_MSC_ST_DEMANDS (
-                        DEMAND_ID NUMBER PRIMARY KEY,
-                        INVENTORY_ITEM_ID NUMBER,
-                        ORGANIZATION_ID NUMBER,
-                        DEMAND_DATE DATE,
-                        QUANTITY NUMBER,
-                        PROCESS_STATUS NUMBER
-                    )
-                """)
-            cur.execute("INSERT INTO TEST_MSC_ST_DEMANDS VALUES (101, 10001, 204, SYSDATE, 50, 1)")
+            # Verify ownership if table already exists in user's schema
+            cur.execute("SELECT table_name FROM user_tables WHERE table_name = :tname", [cls.test_table_name])
+            if cur.fetchone():
+                cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")
+
+            cur.execute(f"""
+                CREATE TABLE {cls.test_table_name} (
+                    DEMAND_ID NUMBER PRIMARY KEY,
+                    INVENTORY_ITEM_ID NUMBER,
+                    ORGANIZATION_ID NUMBER,
+                    DEMAND_DATE DATE,
+                    QUANTITY NUMBER,
+                    PROCESS_STATUS NUMBER
+                )
+            """)
+            cur.execute(f"INSERT INTO {cls.test_table_name} VALUES (101, 10001, 204, SYSDATE, 50, 1)")
             conn.commit()
 
     @classmethod
     def tearDownClass(cls):
-        if hasattr(cls, "config") and is_oracle_live_available():
+        if cls.config and cls.test_table_name and is_oracle_live_available():
             try:
                 with cls.oracledb.connect(
                     user=cls.config.username,
                     password=cls.config.password,
                     host=cls.config.host,
                     port=cls.config.port,
-                    service_name=cls.config.service_name
+                    service_name=cls.config.service_name,
                 ) as conn, conn.cursor() as cur:
-                    cur.execute("DROP TABLE TEST_MSC_ST_DEMANDS PURGE")
+                    cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")
                     conn.commit()
-            except Exception:  # noqa: BLE001, S110 -- ignore drop error on teardown
+            except Exception:  # noqa: BLE001, S110
                 pass
+
+    def setUp(self):
+        self._active_connections = []
+
+    def tearDown(self):
+        """Guarantee cleanup of all open connections and release locks even if test asserts fail."""
+        for conn in self._active_connections:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001, S110
+                pass
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
+        self._active_connections.clear()
+
+    def _open_tracked_connection(self):
+        conn = self.oracledb.connect(
+            user=self.config.username,
+            password=self.config.password,
+            host=self.config.host,
+            port=self.config.port,
+            service_name=self.config.service_name,
+        )
+        self._active_connections.append(conn)
+        return conn
 
     def test_reproduce_ora_00054_and_isolate_root_blocker(self):
         """Simulates real dual-session contention:
-        1. Session 1 locks TEST_MSC_ST_DEMANDS in Exclusive Mode (Mode 6).
+        1. Session 1 locks unique test table in Exclusive Mode (Mode 6).
         2. Session 2 attempts NOWAIT lock and triggers ORA-00054.
         3. LockDiagnosticsEngine inspects live V$ dynamic views.
         4. Asserts Session 1 is correctly isolated as root blocker.
+        5. Cleans up all connections in finally / tearDown.
         """
-        # Session 1: Blocker
-        conn_blocker = self.oracledb.connect(
-            user=self.config.username,
-            password=self.config.password,
-            host=self.config.host,
-            port=self.config.port,
-            service_name=self.config.service_name
-        )
-
-        cur_blocker = conn_blocker.cursor()
-
-        # Step 1: Hold uncommitted Mode 6 Exclusive Table Lock
-        cur_blocker.execute("LOCK TABLE TEST_MSC_ST_DEMANDS IN EXCLUSIVE MODE")
-
-        # Acquire blocker SID after acquiring lock
-        cur_blocker.execute("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")
-        blocker_sid = int(cur_blocker.fetchone()[0])
-
-        # Session 2: Victim worker attempting lock with NOWAIT
-        conn_worker = self.oracledb.connect(
-            user=self.config.username,
-            password=self.config.password,
-            host=self.config.host,
-            port=self.config.port,
-            service_name=self.config.service_name
-        )
-        cur_worker = conn_worker.cursor()
-
-        # Step 2: Trigger ORA-00054
-        ora_54_caught = False
+        pool = None
+        conn_blocker = None
+        conn_worker = None
         try:
-            cur_worker.execute("LOCK TABLE TEST_MSC_ST_DEMANDS IN EXCLUSIVE MODE NOWAIT")
-        except self.oracledb.DatabaseError as exc:
-            error_obj, = exc.args
-            if error_obj.code == 54 or "ORA-00054" in str(exc):
-                ora_54_caught = True
+            # Session 1: Blocker holding uncommitted Mode 6 Exclusive Table Lock
+            conn_blocker = self._open_tracked_connection()
+            cur_blocker = conn_blocker.cursor()
+            cur_blocker.execute(f"LOCK TABLE {self.test_table_name} IN EXCLUSIVE MODE")
 
-        self.assertTrue(ora_54_caught, "Failed to reproduce real ORA-00054 against live Oracle container!")
+            # Acquire blocker SID after acquiring lock
+            cur_blocker.execute("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")
+            blocker_sid = int(cur_blocker.fetchone()[0])
 
-        # Step 3: Run ASCP LockDiagnosticsEngine against the live database with retries
-        pool = OracleConnectionPool(self.config)
-        engine = LockDiagnosticsEngine(pool=pool, config=self.config)
+            # Session 2: Victim worker attempting lock with NOWAIT
+            conn_worker = self._open_tracked_connection()
+            cur_worker = conn_worker.cursor()
 
-        # Bypass cache to perform live inspection of V$ views with retry loop
-        root_blocker = None
-        telemetry = None
-        for _ in range(10):  # Retry for up to ~10 seconds to tolerate propagation delay
-            telemetry = engine.execute_hierarchical_lock_query(bypass_cache=True)
-            root_blocker = engine.isolate_root_blocker(telemetry)
-            if root_blocker:
-                break
-            time.sleep(1)
-
-        # If still missing, dump telemetry and raw dynamic views for debugging
-        if root_blocker is None:
+            # Trigger ORA-00054
+            ora_54_caught = False
             try:
-                print("DEBUG: telemetry =", json.dumps(telemetry, default=str, indent=2))
-            except (TypeError, ValueError):
-                print("DEBUG: telemetry (str) =", str(telemetry))
-            try:
-                with self.oracledb.connect(
-                    user=self.config.username,
-                    password=self.config.password,
-                    host=self.config.host,
-                    port=self.config.port,
-                    service_name=self.config.service_name
-                ) as diag_conn, diag_conn.cursor() as diag_cur:
-                    diag_cur.execute("SELECT sid, serial#, username, status, module FROM v$session WHERE username IS NOT NULL")
-                    print("DEBUG: v$session rows:", diag_cur.fetchall())
-                    diag_cur.execute("SELECT session_id, object_id, locked_mode FROM v$locked_object")
-                    print("DEBUG: v$locked_object rows:", diag_cur.fetchall())
-                    diag_cur.execute("SELECT sid, type, id1, id2, lmode, request, block FROM v$lock WHERE type IN ('TM', 'TX')")
-                    print("DEBUG: v$lock rows:", diag_cur.fetchall())
-            except Exception as diag_err:  # noqa: BLE001 -- diagnostic query fallback
-                print("DEBUG: failed to query diagnostic views:", diag_err)
+                cur_worker.execute(f"LOCK TABLE {self.test_table_name} IN EXCLUSIVE MODE NOWAIT")
+            except self.oracledb.DatabaseError as exc:
+                error_obj = exc.args[0] if exc.args else None
+                if (error_obj and getattr(error_obj, "code", None) == 54) or "ORA-00054" in str(exc):
+                    ora_54_caught = True
 
-        # Step 4: Assertions on real lock telemetry
-        self.assertIsNotNone(root_blocker, "Lock Engine failed to isolate root blocker from live V$ views")
-        self.assertEqual(root_blocker.get("sid"), blocker_sid, f"Expected blocker SID {blocker_sid}, got {root_blocker.get('sid')}")
-        self.assertIn("TEST_MSC_ST_DEMANDS", str(root_blocker.get("object_name")).upper())
-        self.assertEqual(root_blocker.get("locked_mode"), 6, "Expected Lock Mode 6 (Exclusive)")
+            self.assertTrue(ora_54_caught, "Failed to reproduce real ORA-00054 against live Oracle instance!")
 
-        # Cleanup active sessions
-        cur_blocker.execute("ROLLBACK")
-        cur_blocker.close()
-        conn_blocker.close()
+            # Step 3: Run ASCP LockDiagnosticsEngine against the live database with retry
+            pool = OracleConnectionPool(self.config)
+            engine = LockDiagnosticsEngine(pool=pool, config=self.config)
 
-        cur_worker.close()
-        conn_worker.close()
+            root_blocker = None
+            telemetry = None
+            for _ in range(10):  # Retry for up to ~10 seconds to tolerate propagation delay
+                telemetry = engine.execute_hierarchical_lock_query(bypass_cache=True)
+                root_blocker = engine.isolate_root_blocker(telemetry)
+                if root_blocker:
+                    break
+                time.sleep(1)
+
+            # Diagnostic fallback logging if root blocker is missing
+            if root_blocker is None:
+                try:
+                    logger.debug("Telemetry dump: %s", json.dumps(telemetry, default=str, indent=2))
+                except (TypeError, ValueError):
+                    logger.debug("Telemetry: %s", str(telemetry))
+
+            # Step 4: Assertions on real lock telemetry
+            self.assertIsNotNone(root_blocker, "Lock Engine failed to isolate root blocker from live V$ views")
+            self.assertEqual(
+                root_blocker.get("sid"),
+                blocker_sid,
+                f"Expected blocker SID {blocker_sid}, got {root_blocker.get('sid')}",
+            )
+            self.assertIn(
+                self.test_table_name.upper(),
+                str(root_blocker.get("object_name", "")).upper(),
+                f"Expected object {self.test_table_name} in lock telemetry",
+            )
+            self.assertEqual(root_blocker.get("locked_mode"), 6, "Expected Lock Mode 6 (Exclusive)")
+
+        finally:
+            if pool:
+                try:
+                    pool.close()
+                except Exception:  # noqa: BLE001, S110
+                    pass
 
 
 if __name__ == "__main__":

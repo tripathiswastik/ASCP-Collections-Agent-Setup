@@ -53,13 +53,17 @@ def wait_for_db(
 def main() -> int:
     host = os.environ.get("ORACLE_TEST_HOST", "localhost")
     port = int(os.environ.get("ORACLE_TEST_PORT", "1521"))
-    service = os.environ.get("ORACLE_TEST_SERVICE", "FREEPDB1")
-    user = os.environ.get("ORACLE_TEST_USER", "system")
-    pwd = os.environ.get("ORACLE_TEST_PASSWORD", "OraclePassword123!")
+    service = os.environ.get("ORACLE_TEST_SERVICE") or os.environ.get("ORACLE_SERVICE_NAME", "FREEPDB1")
+    user = os.environ.get("ORACLE_TEST_USER") or os.environ.get("ORACLE_USER", "")
+    pwd = os.environ.get("ORACLE_TEST_PASSWORD") or os.environ.get("ORACLE_PASSWORD", "")
 
     if not wait_for_tcp(host, port):
         print(f"[-] Timed out waiting for TCP port {port} on {host}")
         return 1
+
+    if not user or not pwd:
+        print("[!] No ORACLE_TEST_PASSWORD or ORACLE_PASSWORD provided; verified TCP port only.")
+        return 0
 
     if not wait_for_db(host, port, service, user, pwd):
         print(f"[-] Timed out waiting for Oracle DB to accept connections on {host}:{port}/{service}")
