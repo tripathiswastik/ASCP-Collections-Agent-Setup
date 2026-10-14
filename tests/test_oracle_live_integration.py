@@ -7,8 +7,10 @@ against dynamic V$ views, and asserts the root blocker is accurately isolated.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
+import time
 import unittest
 
 import pytest
@@ -145,12 +147,13 @@ class TestOracleLiveIntegration(unittest.TestCase):
         )
 
         cur_blocker = conn_blocker.cursor()
-        # Acquire blocker SID
-        cur_blocker.execute("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")
-        blocker_sid = int(cur_blocker.fetchone()[0])
 
         # Step 1: Hold uncommitted Mode 6 Exclusive Table Lock
         cur_blocker.execute("LOCK TABLE TEST_MSC_ST_DEMANDS IN EXCLUSIVE MODE")
+
+        # Acquire blocker SID after acquiring lock
+        cur_blocker.execute("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")
+        blocker_sid = int(cur_blocker.fetchone()[0])
 
         # Session 2: Victim worker attempting lock with NOWAIT
         conn_worker = self.oracledb.connect(
@@ -173,13 +176,36 @@ class TestOracleLiveIntegration(unittest.TestCase):
 
         self.assertTrue(ora_54_caught, "Failed to reproduce real ORA-00054 against live Oracle container!")
 
-        # Step 3: Run ASCP LockDiagnosticsEngine against the live database
+        # Step 3: Run ASCP LockDiagnosticsEngine against the live database with retries
         pool = OracleConnectionPool(self.config)
         engine = LockDiagnosticsEngine(pool=pool, config=self.config)
 
-        # Bypass cache to perform live inspection of V$ views
-        telemetry = engine.execute_hierarchical_lock_query(bypass_cache=True)
-        root_blocker = engine.isolate_root_blocker(telemetry)
+        # Bypass cache to perform live inspection of V$ views with retry loop
+        root_blocker = None
+        telemetry = None
+        for _ in range(10):  # Retry for up to ~10 seconds to tolerate propagation delay
+            telemetry = engine.execute_hierarchical_lock_query(bypass_cache=True)
+            root_blocker = engine.isolate_root_blocker(telemetry)
+            if root_blocker:
+                break
+            time.sleep(1)
+
+        # If still missing, dump telemetry and raw dynamic views for debugging
+        if root_blocker is None:
+            try:
+                print("DEBUG: telemetry =", json.dumps(telemetry, default=str, indent=2))
+            except (TypeError, ValueError):
+                print("DEBUG: telemetry (str) =", str(telemetry))
+            try:
+                with pool.get_connection() as diag_conn, diag_conn.cursor() as diag_cur:
+                    diag_cur.execute("SELECT sid, serial#, username, status, module FROM v$session WHERE username IS NOT NULL")
+                    print("DEBUG: v$session rows:", diag_cur.fetchall())
+                    diag_cur.execute("SELECT session_id, object_id, locked_mode FROM v$locked_object")
+                    print("DEBUG: v$locked_object rows:", diag_cur.fetchall())
+                    diag_cur.execute("SELECT sid, type, id1, id2, lmode, request, block FROM v$lock WHERE type IN ('TM', 'TX')")
+                    print("DEBUG: v$lock rows:", diag_cur.fetchall())
+            except Exception as diag_err:  # noqa: BLE001 -- diagnostic query fallback
+                print("DEBUG: failed to query diagnostic views:", diag_err)
 
         # Step 4: Assertions on real lock telemetry
         self.assertIsNotNone(root_blocker, "Lock Engine failed to isolate root blocker from live V$ views")
