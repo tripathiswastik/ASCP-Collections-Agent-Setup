@@ -198,7 +198,13 @@ class TestOracleLiveIntegration(unittest.TestCase):
             except (TypeError, ValueError):
                 print("DEBUG: telemetry (str) =", str(telemetry))
             try:
-                with pool.get_connection() as diag_conn, diag_conn.cursor() as diag_cur:
+                with self.oracledb.connect(
+                    user=self.config.username,
+                    password=self.config.password,
+                    host=self.config.host,
+                    port=self.config.port,
+                    service_name=self.config.service_name
+                ) as diag_conn, diag_conn.cursor() as diag_cur:
                     diag_cur.execute("SELECT sid, serial#, username, status, module FROM v$session WHERE username IS NOT NULL")
                     print("DEBUG: v$session rows:", diag_cur.fetchall())
                     diag_cur.execute("SELECT session_id, object_id, locked_mode FROM v$locked_object")
