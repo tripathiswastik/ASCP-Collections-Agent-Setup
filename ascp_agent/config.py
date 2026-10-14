@@ -8,6 +8,40 @@ import os
 from dataclasses import dataclass, field
 
 
+def load_env_file(dotenv_path: str | None = None) -> None:
+    """Load key-value environment variables from .env file if present."""
+    if dotenv_path is None:
+        dotenv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if not os.path.isfile(dotenv_path):
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path)
+    except ImportError:
+        try:
+            with open(dotenv_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except OSError:
+            pass
+
+
+load_env_file()
+
+
+def _resolve_use_simulation() -> bool:
+    if "USE_MOCK_DB" in os.environ:
+        return os.getenv("USE_MOCK_DB", "").lower() in ("true", "1", "yes")
+    return os.getenv("ORACLE_SIMULATION", "true").lower() in ("true", "1", "yes")
+
+
 class ConfigValidationError(RuntimeError, ValueError):
     """Raised when configuration fails fail-closed validation."""
 
@@ -15,7 +49,9 @@ class ConfigValidationError(RuntimeError, ValueError):
 class OracleConfig:
     host: str = field(default_factory=lambda: os.getenv("ORACLE_HOST", "ebs-db.corp.internal"))
     port: int = field(default_factory=lambda: int(os.getenv("ORACLE_PORT", "1521")))
-    service_name: str = field(default_factory=lambda: os.getenv("ORACLE_SERVICE", "EBSPROD"))
+    service_name: str = field(
+        default_factory=lambda: os.getenv("ORACLE_SERVICE_NAME") or os.getenv("ORACLE_SERVICE", "EBSPROD")
+    )
     username: str = field(default_factory=lambda: os.getenv("ORACLE_USER", "APPS_DIAG"))
     password: str = field(default_factory=lambda: os.getenv("ORACLE_PASSWORD", ""), repr=False)
     diagnostic_role: str = "SELECT_CATALOG_ROLE"
@@ -24,9 +60,7 @@ class OracleConfig:
     remediation_password: str = field(default_factory=lambda: os.getenv("ORACLE_REMEDIATION_PASSWORD", ""), repr=False)
     remediation_role: str = "APPS_WRAPPER_EXECUTE"
     mode: str = field(default_factory=lambda: os.getenv("ORACLE_DRIVER_MODE", "thin"))
-    use_simulation: bool = field(
-        default_factory=lambda: os.getenv("ORACLE_SIMULATION", "true").lower() == "true"
-    )
+    use_simulation: bool = field(default_factory=_resolve_use_simulation)
     min_pool_size: int = 1
     max_pool_size: int = 5
     pool_increment: int = 1
