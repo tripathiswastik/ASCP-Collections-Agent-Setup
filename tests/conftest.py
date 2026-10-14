@@ -124,9 +124,10 @@ try:
 
     @pytest.fixture(autouse=True)
     def force_offline_mode(monkeypatch):
-        """Guarantees tests execute in offline simulation mode without accidental live DB calls."""
+        """Guarantees tests execute in offline simulation mode without accidental live DB calls or audit file pollution."""
         monkeypatch.setenv("DISABLE_EXTERNAL_CALLS", "1")
         monkeypatch.setenv("FORCE_SIMULATION_MODE", "1")
+        monkeypatch.setenv("ASCP_PERSIST_AUDIT_LOG", "false")
         yield
 
 except ImportError:

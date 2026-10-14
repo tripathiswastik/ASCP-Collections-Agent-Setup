@@ -161,10 +161,18 @@ def record_audit_event(event: dict[str, Any]) -> dict[str, Any]:
     }
     with _AUDIT_LOG_LOCK:
         _AUDIT_EVENTS.append(entry)
+        if os.environ.get("ASCP_PERSIST_AUDIT_LOG", "true").lower() in ("false", "0", "no"):
+            return entry
         try:
-            audit_dir = os.path.join(BASE_DIR, "logs")
-            os.makedirs(audit_dir, exist_ok=True)
-            log_path = os.path.join(audit_dir, "remediation_audit.jsonl")
+            custom_path = os.environ.get("ASCP_AUDIT_LOG_PATH")
+            if custom_path:
+                log_path = custom_path
+                audit_dir = os.path.dirname(log_path)
+            else:
+                audit_dir = os.environ.get("ASCP_AUDIT_DIR") or os.path.join(BASE_DIR, "logs")
+                log_path = os.path.join(audit_dir, "remediation_audit.jsonl")
+            if audit_dir:
+                os.makedirs(audit_dir, exist_ok=True)
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
         except OSError as exc:
