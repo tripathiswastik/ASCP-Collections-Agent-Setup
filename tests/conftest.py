@@ -19,10 +19,16 @@ if REPO_ROOT not in sys.path:
 
 # Reusable Raw Log Fixture
 SAMPLE_ORA00054_LOGS: list[str] = [
+    "+---------------------------------------------------------------------------+",
+    "Planning Data Collection Centralized Architecture Worker (MSCPDCW)",
+    "Current system time is 12-OCT-2025 04:12:00",
+    "+---------------------------------------------------------------------------+",
     "[12-OCT-2025 04:12:01]: Launching Planning ODS Load Worker 1 (MSCPDCW)",
+    "[12-OCT-2025 04:12:03]: Attempting partition exchange on target table MSC_ST_DEMANDS.",
     "[12-OCT-2025 04:12:05]: Cause: ORA-00054: resource busy and acquire with NOWAIT specified on table MSC_ST_DEMANDS.",
     "[12-OCT-2025 04:12:06]: Action: Contact DBA to verify blocking locks on staging tables.",
-    "[12-OCT-2025 04:12:10]: Worker process 31902 terminated with fatal error status."
+    "[12-OCT-2025 04:12:10]: Worker process 31902 terminated with fatal error status.",
+    "+---------------------------------------------------------------------------+"
 ]
 
 # Reusable Root Blocker & Lock Telemetry Fixture

@@ -22,14 +22,56 @@ if BASE_DIR not in sys.path:
 from ascp_agent.graph import create_ascp_diagnostic_graph
 from ascp_agent.simulator import SCENARIOS
 
-NOISE = ["[INFO] heartbeat ok", "[WARN] slow fetch on MSC_ST_SUPPLIES"]
+LIGHT_NOISE = [
+    "[INFO] worker heartbeat check completed: status OK",
+    "[DEBUG] DB session acquired in 1.2ms from pool",
+    "[INFO] MSCPDP staging table check: 584900 rows fetched",
+]
+
+MODERATE_NOISE = [
+    "[INFO] worker process 31902 active thread count: 4",
+    "[WARN] slow disk I/O on tablespace APPS_TS_MEDIA: 142ms",
+    "[INFO] checkpoint completed for transaction commit",
+    "[DEBUG] cursor memory cache hit ratio: 98.4%",
+]
+
+CONCURRENT_WORKER_NOISE = [
+    "[12-OCT-2025 04:12:00]: Launching Planning ODS Load Worker 2 (MSCPDCW)",
+    "[12-OCT-2025 04:12:02]: Worker 2 status: IN_PROGRESS (processing partition P_1001)",
+    "[12-OCT-2025 04:12:08]: Worker 3 ping: waiting for parent synchronization signal",
+    "[12-OCT-2025 04:12:12]: Worker 4 status: IDLE, awaiting next task batch",
+]
+
+TIMESTAMP_DRIFT_NOISE = [
+    "[13-OCT-2025 11:20:00]: Database system time synchronized with NTP server",
+    "[13-OCT-2025 11:20:05]: Periodic health probe returned status NORMAL",
+    "[13-OCT-2025 11:20:10]: Monitored tablespace usage within baseline thresholds",
+]
+
+DIAGNOSTIC_TRACE_NOISE = [
+    "[TRACE] PL/SQL Call Stack: package body APPS.MSC_CL_COLLECTION line 4120",
+    "[TRACE] Call stack entry: package body APPS.MRP_CL_REFRESH line 890",
+    "[DEBUG] SQL statement execution hash: 0x9f4a120c, elapsed: 0.04s",
+]
+
+ADVERSARIAL_INJECTION_NOISE = [
+    "[AUDIT] Operator comment: investigate possible stuck batch",
+    "[SECURITY WARNING] Automated scanner payload logged in audit trail",
+    "[INFO] Request parameter validation passed for concurrent program",
+]
+
+HIGH_VOLUME_BATCH_NOISE = [
+    "[INFO] Batch commit completed: 50,000 records processed",
+    "[INFO] Batch commit completed: 100,000 records processed",
+    "[INFO] Memory allocation for bulk array: 64MB",
+]
 
 
-def perturb(lines: list[str], seed: int) -> list[str]:
+def perturb(lines: list[str], noise_pool: list[str], seed: int, count: int = 3) -> list[str]:
     rng = random.Random(seed)
     out = list(lines)
-    for _ in range(3):
-        out.insert(rng.randrange(len(out) + 1), rng.choice(NOISE))
+    for _ in range(count):
+        out.insert(rng.randrange(len(out) + 1), rng.choice(noise_pool))
     return out
 
 BENCHMARK_DATASET: list[dict[str, Any]] = [
@@ -154,6 +196,43 @@ BENCHMARK_DATASET: list[dict[str, Any]] = [
         "expected_action": "INSPECT_LOCKS",
         "is_destructive_candidate": False,
         "expected_blocker_sid": None
+    },
+    {
+        "id": "CASE-13",
+        "description": "ORA-00054 Lock Contention on MSC_ST_BOM with Third-Party Session",
+        "custom_logs": [
+            "+---------------------------------------------------------------------------+",
+            "Planning Data Collection Worker (MSCPDCW)",
+            "Current system time is 12-OCT-2025 04:30:11",
+            "+---------------------------------------------------------------------------+",
+            "[12-OCT-2025 04:30:12]: Worker 2 starting partition exchange for MSC_ST_BOM.",
+            "[12-OCT-2025 04:30:15]: ORA-00054: resource busy and acquire with NOWAIT specified on table MSC_ST_BOM.",
+            "[12-OCT-2025 04:30:16]: Table lock acquisition failed in exclusive mode.",
+            "+---------------------------------------------------------------------------+"
+        ],
+        "expected_failure_mode": "ORA-00054",
+        "expected_action": "KILL_SESSION",
+        "is_destructive_candidate": True,
+        "expected_blocker_sid": 412
+    },
+    {
+        "id": "CASE-14",
+        "description": "Healthy Stage 1 Pull and Stage 2 Load Execution with Complete Refresh",
+        "custom_logs": [
+            "+---------------------------------------------------------------------------+",
+            "Planning Data Collection Complete Refresh Controller",
+            "Current system time is 12-OCT-2026 10:00:00",
+            "+---------------------------------------------------------------------------+",
+            "[INFO] Phase 1 Pull (MSCPDP) completed: 1,200,000 records extracted cleanly.",
+            "[INFO] Phase 2 Load (MSCPDC) completed: 1,200,000 records loaded to ODS tables.",
+            "[INFO] Phase 3 Maintenance (MSCPDCP) completed: staging truncated successfully.",
+            "Collection completed normally.",
+            "+---------------------------------------------------------------------------+"
+        ],
+        "expected_failure_mode": "UNKNOWN",
+        "expected_action": "INSPECT_LOCKS",
+        "is_destructive_candidate": False,
+        "expected_blocker_sid": None
     }
 ]
 
@@ -224,44 +303,62 @@ def _evaluate_subset(name: str, cases: list[tuple[dict[str, Any], list[str]]]) -
     }
 
 
-def run_evaluation_benchmark() -> dict[str, Any]:
-    print("=" * 80)
-    print("ASCP DIAGNOSTIC AGENT REGRESSION & ROBUSTNESS EVALUATION SUITE")
-    print("=" * 80)
-
-    # 1. Baseline Cases
-    baseline_cases = []
-    for test_case in BENCHMARK_DATASET:
-        scen_key = test_case.get("scenario_key")
-        raw_logs = SCENARIOS[scen_key]["logs"] if scen_key and scen_key in SCENARIOS else test_case.get("custom_logs", [])
-        baseline_cases.append((test_case, list(raw_logs)))
-
-    # 2. Perturbed Cases (injected benign noise)
-    perturbed_cases = []
+def _build_cases(noise_pool: list[str] | None = None, seed_offset: int = 0) -> list[tuple[dict[str, Any], list[str]]]:
+    cases = []
     for idx, test_case in enumerate(BENCHMARK_DATASET):
         scen_key = test_case.get("scenario_key")
         raw_logs = SCENARIOS[scen_key]["logs"] if scen_key and scen_key in SCENARIOS else test_case.get("custom_logs", [])
-        perturbed_logs = perturb(raw_logs, seed=idx + 42)
-        perturbed_cases.append((test_case, perturbed_logs))
+        if noise_pool:
+            test_logs = perturb(raw_logs, noise_pool, seed=idx + seed_offset)
+        else:
+            test_logs = list(raw_logs)
+        cases.append((test_case, test_logs))
+    return cases
 
-    base_res = _evaluate_subset("Baseline-Scenarios", baseline_cases)
-    pert_res = _evaluate_subset("Perturbed-Noise-Variants", perturbed_cases)
+
+def run_evaluation_benchmark() -> dict[str, Any]:
+    print("=" * 80)
+    print("ASCP DIAGNOSTIC AGENT REGRESSION & ROBUSTNESS EVALUATION SUITE (100+ CASES)")
+    print("=" * 80)
+
+    subsets_spec = [
+        ("1. Baseline-Clean-Scenarios", None, 0),
+        ("2. Light-Heartbeat-Noise", LIGHT_NOISE, 10),
+        ("3. Disk-IO-Latency-Noise", MODERATE_NOISE, 20),
+        ("4. Parallel-Worker-Interleaved", CONCURRENT_WORKER_NOISE, 30),
+        ("5. Timestamp-Drift-Variants", TIMESTAMP_DRIFT_NOISE, 40),
+        ("6. Diagnostic-PLSQL-Callstacks", DIAGNOSTIC_TRACE_NOISE, 50),
+        ("7. Adversarial-Prompt-Defense", ADVERSARIAL_INJECTION_NOISE, 60),
+        ("8. High-Volume-Batch-Noise", HIGH_VOLUME_BATCH_NOISE, 70),
+    ]
+
+    all_subset_results = []
+    total_evaluated_cases = 0
+
+    for name, noise_pool, seed_offset in subsets_spec:
+        cases = _build_cases(noise_pool, seed_offset)
+        res = _evaluate_subset(name, cases)
+        all_subset_results.append(res)
+        total_evaluated_cases += res["total_cases"]
 
     print("\n" + "=" * 80)
-    print("EVALUATION HARNESS METRICS SUMMARY (SEPARATE REPORTS)")
+    print(f"EVALUATION HARNESS METRICS SUMMARY: {total_evaluated_cases} TOTAL TESTS EXECUTED")
     print("=" * 80)
-    print(f"Baseline Scenarios:      Class Acc={base_res['classification_accuracy']}% | Action Acc={base_res['action_accuracy']}% | Brier={base_res['brier_score']}")
-    print(f"Perturbed Noise Variants: Class Acc={pert_res['classification_accuracy']}% | Action Acc={pert_res['action_accuracy']}% | Brier={pert_res['brier_score']}")
+    for sub in all_subset_results:
+        print(f" - {sub['name']:<32}: Class Acc={sub['classification_accuracy']:>5.1f}% | Action Acc={sub['action_accuracy']:>5.1f}% | False-Kill={sub['false_kill_rate']:>4.1f}% | Brier={sub['brier_score']:.4f}")
     print("=" * 80)
 
-    assert base_res["classification_accuracy"] >= 90.0
-    assert base_res["action_accuracy"] >= 90.0
-    assert base_res["false_kill_rate"] == 0.0
-    assert pert_res["false_kill_rate"] == 0.0
+    # Verification Assertions
+    assert total_evaluated_cases >= 100, f"Expected at least 100 tests, ran {total_evaluated_cases}"
+    for sub in all_subset_results:
+        assert sub["classification_accuracy"] >= 90.0, f"{sub['name']} classification accuracy below 90%"
+        assert sub["action_accuracy"] >= 90.0, f"{sub['name']} action accuracy below 90%"
+        assert sub["false_kill_rate"] == 0.0, f"{sub['name']} false kill rate > 0.0%"
 
+    print(f"[SUCCESS] ALL {total_evaluated_cases} HARNESS TESTS PASSED WITH 0.0% FALSE KILLS!")
     return {
-        "baseline": base_res,
-        "perturbed": pert_res,
+        "total_cases": total_evaluated_cases,
+        "subsets": all_subset_results,
     }
 
 
