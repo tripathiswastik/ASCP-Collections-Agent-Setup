@@ -190,8 +190,8 @@ class LockDiagnosticsEngine:
         results: list[dict[str, Any]] = []
         oracledb_mod = getattr(self.pool, "_oracledb", None)
         if oracledb_mod is None:
-            import oracledb
-            oracledb_mod = oracledb
+            import importlib
+            oracledb_mod = importlib.import_module("oracledb")
         cfg = self.config or getattr(self.pool, "config", None)
         target_host = getattr(cfg, "scan_address", None) or cfg.host
         with oracledb_mod.connect(

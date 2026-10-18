@@ -15,9 +15,10 @@ def load_env_file(dotenv_path: str | None = None) -> None:
     if not os.path.isfile(dotenv_path):
         return
     try:
-        from dotenv import load_dotenv
-        load_dotenv(dotenv_path)
-    except ImportError:
+        import importlib
+        dotenv_mod = importlib.import_module("dotenv")
+        dotenv_mod.load_dotenv(dotenv_path)
+    except (ImportError, ModuleNotFoundError, Exception):
         try:
             with open(dotenv_path, encoding="utf-8") as f:
                 for line in f:
