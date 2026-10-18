@@ -321,3 +321,10 @@ docker-compose ps
 ## 📜 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+
+---
+
+## 🏷️ Repository Metadata & Topic Tags
+- **Core Topics**: `oracle-ebs` `ascp` `diagnostic-agent` `langgraph` `ai-agents` `security-guardrails` `python` `docker`
+- **Governance**: Follows [Antigravity AI Rules](file:///d:/ag-ai/.agents/rules/antigravity-rules.md) and [Multi-Agent SDLC Contracts](file:///d:/ag-ai/.agents/rules/multi-agent-prompts.md).
