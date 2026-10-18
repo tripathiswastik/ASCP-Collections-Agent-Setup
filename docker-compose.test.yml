@@ -38,10 +38,10 @@ services:
         set -e;
         python -m pip install --upgrade pip;
         pip install -r requirements.txt;
-        pip install oracledb;
+        pip install oracledb pytest;
         pip install -e .;
         echo 'Waiting for Oracle to be reachable...';
         python scripts/wait_for_oracle.py;
         echo 'Running ORA-00054 integration test...';
-        pytest -q tests/test_oracle_live_integration.py::TestOracleLiveIntegration::test_reproduce_ora_00054_and_isolate_root_blocker
+        python -m pytest -q tests/test_oracle_live_integration.py::TestOracleLiveIntegration::test_reproduce_ora_00054_and_isolate_root_blocker
       "
