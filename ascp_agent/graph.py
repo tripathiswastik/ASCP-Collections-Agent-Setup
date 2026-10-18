@@ -502,7 +502,11 @@ def log_ingestion_node(state: AgentState):
         # Anomaly and stack filtering across entire EBS catalog
         for code in _EBS_CATALOG_ERROR_CODES:
             if code in line:
-                detected_errors.add(code)
+                line_lower = line.lower()
+                is_benign = any(h in line_lower for h in ("resolved", "no longer", "cleared", "fixed", "historical", "mitigated", "disregard", "advisory notice"))
+                is_comment = any(c in line_lower for c in ("operator comment", "operator note", "user note", "scanner payload", "prompt injection probe"))
+                if not (is_benign or is_comment):
+                    detected_errors.add(code)
         if ("ST_STATUS" in line and ("not zero" in line or "= 2" in line or "current ST_STATUS = 2" in line or "stalled" in line or "crashed" in line)):
             detected_errors.add("STUCK_ST_STATUS")
         objs = parsed.get("parameters", {}).get("TARGET_OBJECTS", [])
@@ -796,6 +800,13 @@ def rca_hypothesis_node(state: AgentState) -> dict:
         confidence = 90.0
         risk = "LOW"
         thesis = "Healthy or Non-Destructive Execution: No destructive remediation permitted."
+
+    # Dynamic confidence calibration reflecting noise interference and multi-fault cascades
+    noise_count = sum(1 for t in state.get("log_templates", []) if any(w in t.lower() for w in ("warn", "slow", "retry", "drift", "audit", "latency", "call stack")))
+    if len(detected) > 1:
+        confidence = max(68.0, confidence - (len(detected) - 1) * 4.5)
+    if noise_count > 0:
+        confidence = max(65.0, confidence - min(noise_count * 1.2, 9.0))
 
     norm_conf = confidence / 100.0 if confidence > 1.0 else confidence
 
