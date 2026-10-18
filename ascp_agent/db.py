@@ -87,10 +87,11 @@ class OracleConnectionPool:
 
         try:
             assert self._oracledb is not None
+            target_host = getattr(self.config, "scan_address", None) or self.config.host
             self._sync_pool = self._oracledb.create_pool(
                 user=self.config.username,
                 password=self.config.password,
-                host=self.config.host,
+                host=target_host,
                 port=self.config.port,
                 service_name=self.config.service_name,
                 min=min_conn,
@@ -98,7 +99,7 @@ class OracleConnectionPool:
                 increment=1
             )
             self._is_connected = True
-            logger.info("Oracle synchronous connection pool created successfully.")
+            logger.info("Oracle synchronous connection pool created successfully on host %s.", target_host)
             return True
         except Exception as e:
             logger.error("Failed to create live Oracle connection pool: %s", e)
@@ -123,10 +124,11 @@ class OracleConnectionPool:
 
         try:
             assert self._oracledb is not None
+            target_host = getattr(self.config, "scan_address", None) or self.config.host
             self._async_pool = await self._oracledb.create_pool_async(
                 user=self.config.username,
                 password=self.config.password,
-                host=self.config.host,
+                host=target_host,
                 port=self.config.port,
                 service_name=self.config.service_name,
                 min=min_conn,
@@ -134,7 +136,7 @@ class OracleConnectionPool:
                 increment=1
             )
             self._is_connected = True
-            logger.info("Oracle asynchronous connection pool created successfully.")
+            logger.info("Oracle asynchronous connection pool created successfully on host %s.", target_host)
             return True
         except Exception as e:
             logger.error("Failed to create live Oracle async pool: %s", e)

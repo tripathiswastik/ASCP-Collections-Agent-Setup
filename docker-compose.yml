@@ -1,6 +1,26 @@
 version: '3.8'
 
 services:
+  ascp-postgres:
+    image: postgres:15-alpine
+    container_name: ascp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ascp_db
+      POSTGRES_USER: ascp_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ascp_secure_pass_change_in_prod}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ascp_user -d ascp_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal-net
+
   ascp-agent:
     build:
       context: .
@@ -13,11 +33,16 @@ services:
       - PORT=8085
       - HOST=0.0.0.0
       - ASCP_ENV=production
+      - ENVIRONMENT=production
       - ASCP_SECRETS_FILE=/run/secrets/ascp_secrets.json
       # Secure operator tokens must be supplied via secrets file or externally via environment:
       - ASCP_OPERATOR_TOKENS=${ASCP_OPERATOR_TOKENS:-{}}
+      - POSTGRES_CONNECTION_STRING=postgresql://ascp_user:${POSTGRES_PASSWORD:-ascp_secure_pass_change_in_prod}@ascp-postgres:5432/ascp_db
     volumes:
       - ./config/secrets.json:/run/secrets/ascp_secrets.json:ro
+    depends_on:
+      ascp-postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8085/health"]
       interval: 15s
@@ -40,6 +65,9 @@ services:
       - ascp-agent
     networks:
       - internal-net
+
+volumes:
+  postgres-data:
 
 networks:
   internal-net:

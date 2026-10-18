@@ -29,6 +29,7 @@ LOCK_MODE_MAPPING = {
 HIERARCHICAL_LOCK_SQL = """SELECT
     LEVEL AS lock_depth,
     CONNECT_BY_ISLEAF AS is_blocked_leaf,
+    s.inst_id,
     s.sid,
     s.serial# AS serial_number,
     s.username AS oracle_username,
@@ -41,29 +42,29 @@ HIERARCHICAL_LOCK_SQL = """SELECT
     do.object_name,
     lo.locked_mode,
     sq.sql_text AS current_sql_text
-FROM v$session s
-LEFT JOIN v$locked_object lo ON s.sid = lo.session_id
-LEFT JOIN dba_objects do     ON lo.object_id = do.object_id
-LEFT JOIN v$sql sq           ON s.sql_id = sq.sql_id
+FROM gv$session s
+LEFT JOIN gv$locked_object lo ON s.sid = lo.session_id AND s.inst_id = lo.inst_id
+LEFT JOIN dba_objects do      ON lo.object_id = do.object_id
+LEFT JOIN gv$sql sq           ON s.sql_id = sq.sql_id AND s.inst_id = sq.inst_id
 WHERE s.module LIKE '%MSC%'
    OR s.blocking_session IS NOT NULL
-   OR s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
-   OR s.sid IN (SELECT session_id FROM v$locked_object WHERE locked_mode >= 3)
+   OR s.sid IN (SELECT blocking_session FROM gv$session WHERE blocking_session IS NOT NULL)
+   OR s.sid IN (SELECT session_id FROM gv$locked_object WHERE locked_mode >= 3)
 CONNECT BY PRIOR s.sid = s.blocking_session
 START WITH s.blocking_session IS NULL
        AND (
-           s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
-           OR s.sid IN (SELECT session_id FROM v$locked_object WHERE locked_mode >= 3)
+           s.sid IN (SELECT blocking_session FROM gv$session WHERE blocking_session IS NOT NULL)
+           OR s.sid IN (SELECT session_id FROM gv$locked_object WHERE locked_mode >= 3)
        )
 ORDER BY LEVEL ASC;"""
 
 SQL_QUERY_REGISTRY: dict[str, str] = {
     "HIERARCHICAL_LOCK_TREE": HIERARCHICAL_LOCK_SQL,
     "ORA_00054_LOCK_LOOKUP": (
-        "SELECT lo.session_id AS sid, s.serial#, lo.locked_mode, do.object_name "
-        "FROM v$locked_object lo "
+        "SELECT lo.session_id AS sid, s.serial#, s.inst_id, lo.locked_mode, do.object_name "
+        "FROM gv$locked_object lo "
         "JOIN dba_objects do ON lo.object_id = do.object_id "
-        "JOIN v$session s ON lo.session_id = s.sid "
+        "JOIN gv$session s ON lo.session_id = s.sid AND lo.inst_id = s.inst_id "
         "WHERE do.object_name LIKE :table_pattern"
     ),
     "ST_STATUS_REGISTRY_CHECK": (
@@ -71,9 +72,9 @@ SQL_QUERY_REGISTRY: dict[str, str] = {
         "FROM msc_apps_instances WHERE instance_id = :instance_id"
     ),
     "SESSION_UNDO_VOLUME_CHECK": (
-        "SELECT s.sid, s.serial#, t.used_urec, t.used_ublk, t.start_time "
-        "FROM v$session s "
-        "JOIN v$transaction t ON s.taddr = t.addr "
+        "SELECT s.sid, s.serial#, s.inst_id, t.used_urec, t.used_ublk, t.start_time "
+        "FROM gv$session s "
+        "JOIN gv$transaction t ON s.taddr = t.addr AND s.inst_id = t.inst_id "
         "WHERE s.sid = :sid"
     ),
     "ORA_14098_INDEX_CHECK": (
@@ -90,7 +91,7 @@ SQL_QUERY_REGISTRY: dict[str, str] = {
     "ALIGN_INDEXES": "EXEC MSC_CL_EXCHANGE_PARTTN.ALIGN_INDEX_DEFS('{table_name}');",
     "PURGE_PIPE": "EXEC DBMS_PIPE.PURGE('MSC_PIPE_{inst}');",
     "REFRESH_SNAPSHOT": "EXEC DBMS_SNAPSHOT.REFRESH('{mview_name}', 'F');",
-    "DEADLOCK_TRACE_CHECK": "SELECT sid, username, status, sql_id FROM v$session WHERE status = 'ACTIVE';",
+    "DEADLOCK_TRACE_CHECK": "SELECT inst_id, sid, serial#, username, status, sql_id FROM gv$session WHERE status = 'ACTIVE';",
     "UNDO_RETENTION_CHECK": "SELECT tablespace_name, status, retention FROM dba_tablespaces WHERE contents = 'UNDO';",
     "TABLESPACE_QUOTA_CHECK": "SELECT tablespace_name, bytes/1024/1024 as mbytes FROM dba_data_files WHERE tablespace_name = :tablespace_name;",
     "SHARED_POOL_FREE_CHECK": "SELECT pool, name, bytes/1024/1024 as mbytes FROM v$sgastat WHERE pool = 'shared pool' AND name = 'free memory';",
@@ -192,10 +193,11 @@ class LockDiagnosticsEngine:
             import oracledb
             oracledb_mod = oracledb
         cfg = self.config or getattr(self.pool, "config", None)
+        target_host = getattr(cfg, "scan_address", None) or cfg.host
         with oracledb_mod.connect(
             user=cfg.username,
             password=cfg.password,
-            host=cfg.host,
+            host=target_host,
             port=cfg.port,
             service_name=cfg.service_name,
         ) as conn, conn.cursor() as cursor:
@@ -209,6 +211,7 @@ class LockDiagnosticsEngine:
                 fallback_sql = """SELECT
                     1 AS lock_depth,
                     0 AS is_blocked_leaf,
+                    s.inst_id,
                     s.sid,
                     s.serial# AS serial_number,
                     s.username AS oracle_username,
@@ -221,10 +224,10 @@ class LockDiagnosticsEngine:
                     do.object_name,
                     lo.locked_mode,
                     sq.sql_text AS current_sql_text
-                FROM v$locked_object lo
-                JOIN v$session s ON lo.session_id = s.sid
+                FROM gv$locked_object lo
+                JOIN gv$session s ON lo.session_id = s.sid AND lo.inst_id = s.inst_id
                 LEFT JOIN dba_objects do ON lo.object_id = do.object_id
-                LEFT JOIN v$sql sq ON s.sql_id = sq.sql_id
+                LEFT JOIN gv$sql sq ON s.sql_id = sq.sql_id AND s.inst_id = sq.inst_id
                 ORDER BY lo.locked_mode DESC"""
                 cursor.execute(fallback_sql)
                 cols = [c[0].lower() for c in cursor.description]
@@ -440,13 +443,25 @@ class LockDiagnosticsEngine:
     def verify_session_active(self, sid: int, serial: int, inst_id: int | None = None) -> dict[str, Any] | None:
         """Re-queries the database immediately prior to termination to confirm the session
         is still active and that the SID has not been recycled for a new connection.
+        Queries global GV$SESSION view across all RAC nodes concurrently validating SID and SERIAL#.
         """
+        if sid <= 0 or serial <= 0:
+            return None
+
         if not self.pool.is_simulation:
             if inst_id is not None:
-                sql = "SELECT s.inst_id, s.sid, s.serial#, s.status, s.username FROM gv$session s WHERE s.sid = :sid AND s.serial# = :serial AND s.inst_id = :inst_id"
+                sql = (
+                    "SELECT s.inst_id, s.sid, s.serial#, s.status, s.username "
+                    "FROM gv$session s "
+                    "WHERE s.sid = :sid AND s.serial# = :serial AND s.inst_id = :inst_id"
+                )
                 params = {"sid": sid, "serial": serial, "inst_id": inst_id}
             else:
-                sql = "SELECT s.sid, s.serial#, s.status, s.username FROM v$session s WHERE s.sid = :sid AND s.serial# = :serial"
+                sql = (
+                    "SELECT s.inst_id, s.sid, s.serial#, s.status, s.username "
+                    "FROM gv$session s "
+                    "WHERE s.sid = :sid AND s.serial# = :serial"
+                )
                 params = {"sid": sid, "serial": serial}
             try:
                 res = self.pool.execute_query(sql, params)
@@ -459,8 +474,6 @@ class LockDiagnosticsEngine:
                 raise LockQueryError(f"Session active verification failed for SID {sid}") from exc
 
         # Simulated mode: verify SID/serial consistency
-        if sid <= 0 or serial <= 0:
-            return None
-        if sid == 412 and serial != 28419:
+        if sid == 412 and serial not in (28419, 18920):
             return None
         return {"sid": sid, "serial#": serial, "status": "ACTIVE", "username": "APPS", "inst_id": inst_id or 1}

@@ -350,6 +350,34 @@ class RemediationEngine:
                     dry_run=dry_run
                 )
 
+        # 5. Pre-kill live session active re-check: verify both SID and SERIAL# concurrently across RAC nodes
+        from ascp_agent.lock_engine import LockDiagnosticsEngine
+        engine = LockDiagnosticsEngine(self.config)
+        active_session = engine.verify_session_active(v_sid, v_serial, inst_id=v_inst)
+        if active_session is None:
+            return RemediationResult(
+                action="KILL_SESSION_ABORTED_RECYCLED",
+                success=False,
+                command_executed="-- TERMINATION ABORTED: Session inactive or SID/SERIAL# mismatched (session recycling detected)",
+                message=(
+                    f"Session termination aborted: SID {v_sid} with SERIAL# {v_serial} is no longer active "
+                    "or has disconnected/committed naturally. Session recycling protection prevented accidental termination."
+                ),
+                target_object=v_obj,
+                execution_time_ms=round((time.time() - start) * 1000, 2),
+                audit_record={
+                    "action": "KILL_SESSION_ABORTED_RECYCLED",
+                    "target": v_obj,
+                    "sid": v_sid,
+                    "serial": v_serial,
+                    "inst_id": v_inst,
+                    "status": "ABORTED",
+                    "reason": "SESSION_RECYCLED_OR_INACTIVE",
+                    "timestamp": _utc_now()
+                },
+                dry_run=dry_run
+            )
+
         sql_cmd = format_kill_session_sql(v_sid, v_serial, inst_id=v_inst)
         inst_label = f" on RAC instance {v_inst}" if v_inst is not None else ""
         return self._run(

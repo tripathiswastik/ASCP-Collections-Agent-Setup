@@ -56,6 +56,12 @@ class OracleConfig:
     host: str = field(
         default_factory=lambda: os.getenv("ORACLE_HOST") or os.getenv("ORACLE_TEST_HOST", "ebs-db.corp.internal")
     )
+    scan_address: str = field(
+        default_factory=lambda: os.getenv("ORACLE_SCAN_ADDRESS") or os.getenv("ORACLE_SCAN_HOST") or os.getenv("ORACLE_HOST") or os.getenv("ORACLE_TEST_HOST", "ebs-db.corp.internal")
+    )
+    is_rac: bool = field(
+        default_factory=lambda: os.getenv("ORACLE_IS_RAC", "true").lower() in ("true", "1", "yes")
+    )
     port: int = field(
         default_factory=lambda: int(os.getenv("ORACLE_PORT") or os.getenv("ORACLE_TEST_PORT", "1521"))
     )

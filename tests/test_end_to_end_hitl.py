@@ -155,6 +155,47 @@ class TestEndToEndHITLFlow(unittest.TestCase):
             self.assertFalse(res.get("is_remediated"))
             self.assertIn("is no longer active; lock cleared while awaiting approval", res["messages"][-2].content)
 
+    def test_session_recycling_mismatched_serial_aborts_kill(self):
+        """Validates that execute_kill_session aborts if SID is recycled with a different SERIAL#."""
+        from ascp_agent.remediation import RemediationEngine
+        engine = RemediationEngine()
+        # In simulated mode, SID 412 requires SERIAL# 28419; serial 99999 simulates a recycled session
+        res = engine.execute_kill_session(sid=412, serial=99999, object_name="MSC_ST_DEMANDS")
+        self.assertFalse(res.success)
+        self.assertEqual(res.action, "KILL_SESSION_ABORTED_RECYCLED")
+        self.assertIn("session recycling protection prevented accidental termination", res.message.lower())
+        self.assertEqual(res.audit_record.get("reason"), "SESSION_RECYCLED_OR_INACTIVE")
+
+    def test_hitl_session_recycling_protection(self):
+        """Validates that if SID is recycled while awaiting HITL approval, kill is aborted."""
+        graph = create_ascp_diagnostic_graph()
+        thread_id = "test-hitl-recycled-1"
+
+        state = graph.invoke(
+            initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": self.logs},
+            config={"configurable": {"thread_id": thread_id}}
+        )
+
+        self.assertTrue(state.get("interrupted"))
+        payload = state.get("interrupt_payload", {})
+
+        # Simulate Oracle assigning SID 412 to a new connection (different serial)
+        with mock.patch("ascp_agent.lock_engine.LockDiagnosticsEngine.verify_session_active", return_value=None):
+            resume_cmd = Command(resume={
+                "approved": True,
+                "dba_user": "lead_dba",
+                "approval_id": payload["approval_id"],
+                "approval_fingerprint": payload["approval_fingerprint"],
+            })
+
+            res = graph.invoke(
+                config={"configurable": {"thread_id": thread_id}},
+                resume_command=resume_cmd
+            )
+
+            self.assertFalse(res.get("is_remediated"))
+            self.assertIn("session recycling prevented", res["messages"][-2].content)
+
 
 if __name__ == "__main__":
     unittest.main()

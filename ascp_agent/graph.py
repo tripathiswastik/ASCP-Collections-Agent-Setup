@@ -147,7 +147,7 @@ class PostgresSaver:
     Automatically falls back to memory persistence if PostgreSQL is offline or unconfigured.
     """
     def __init__(self, dsn: str | None = None, min_conn: int = 1, max_conn: int = 10):
-        self.dsn = dsn
+        self.dsn = dsn or os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("POSTGRES_DSN")
         self._memory_backup = MemorySaver(max_threads=100, max_checkpoints_per_thread=10)
         self._psycopg = None
         self._pool = None
@@ -957,10 +957,10 @@ def hitl_gate_node(state: AgentState) -> dict:
     routing = HITLGovernanceEngine.evaluate_governance_routing(action or "", confidence)
     requires_approval = rule.requires_mandatory_approval or (routing in ["MANDATORY_HITL_INTERRUPT", "CONDITIONAL_INTERRUPT"])
 
-    target_sid = blocker.get("sid")
-    target_serial = blocker.get("serial_number")
+    target_sid = blocker.get("sid") or state.get("context", {}).get("target_sid")
+    target_serial = blocker.get("serial_number") or state.get("context", {}).get("target_serial")
     target_obj = blocker.get("object_name", state.get("context", {}).get("target_staging_table", "MSC_ST_DEMANDS"))
-    target_inst = blocker.get("inst_id")
+    target_inst = blocker.get("inst_id") or state.get("context", {}).get("inst_id")
     approval_fingerprint = calculate_remediation_fingerprint(
         action or "",
         {
@@ -1032,7 +1032,7 @@ def hitl_gate_node(state: AgentState) -> dict:
             return {
                 "remediation_approved": True,
                 "is_remediated": False,
-                "messages": [AIMessage(content=f"Session SID {target_sid} (serial {target_serial}) is no longer active; lock cleared while awaiting approval. No termination needed.")]
+                "messages": [AIMessage(content=f"Session SID {target_sid} (serial {target_serial}) is no longer active; lock cleared while awaiting approval (session recycling prevented). No termination needed.")]
             }
 
     executor = ACTION_EXECUTORS.get(action or "")
@@ -1114,9 +1114,21 @@ def route_from_classification(state: AgentState) -> str:
     return "rca_hypothesis_node"
 
 def _default_checkpointer() -> Any:
-    """Returns durable PostgresSaver if POSTGRES_DSN is configured, else lightweight MemorySaver."""
-    dsn = os.getenv("POSTGRES_DSN") or os.getenv("POSTGRES_CONNECTION_STRING")
-    return PostgresSaver(dsn=dsn) if dsn else MemorySaver()
+    """Returns durable PostgresSaver if POSTGRES_CONNECTION_STRING or POSTGRES_DSN is configured,
+    else lightweight MemorySaver with warnings if running in non-development environments.
+    """
+    dsn = os.getenv("POSTGRES_CONNECTION_STRING") or os.getenv("POSTGRES_DSN")
+    if dsn:
+        logger.info("Initializing durable PostgresSaver checkpointer with configured database backend.")
+        return PostgresSaver(dsn=dsn)
+    env = os.getenv("ENVIRONMENT", "").lower()
+    if env in ("staging", "production", "prod"):
+        logger.critical(
+            "CRITICAL: System running in %s without POSTGRES_CONNECTION_STRING! "
+            "Using in-memory MemorySaver risks state loss and orphaned lock workflows on restart.",
+            env
+        )
+    return MemorySaver()
 
 
 def create_ascp_diagnostic_graph(checkpointer: Any | None = None) -> CompiledStateGraph:
