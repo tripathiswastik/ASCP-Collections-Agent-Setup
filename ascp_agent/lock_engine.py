@@ -26,7 +26,39 @@ LOCK_MODE_MAPPING = {
     6: ("Exclusive (X)", "Exclusive Table Lock. Completely blocks MSCPDCP staging truncations and parallel worker writes.")
 }
 
-HIERARCHICAL_LOCK_SQL = """SELECT
+HIERARCHICAL_LOCK_SQL_V = """SELECT
+    LEVEL AS lock_depth,
+    CONNECT_BY_ISLEAF AS is_blocked_leaf,
+    1 AS inst_id,
+    s.sid,
+    s.serial# AS serial_number,
+    s.username AS oracle_username,
+    s.osuser AS os_user_name,
+    s.process AS os_process_id,
+    s.module,
+    s.action,
+    s.blocking_session,
+    lo.object_id,
+    do.object_name,
+    lo.locked_mode,
+    sq.sql_text AS current_sql_text
+FROM v$session s
+LEFT JOIN v$locked_object lo ON s.sid = lo.session_id
+LEFT JOIN dba_objects do     ON lo.object_id = do.object_id
+LEFT JOIN v$sql sq           ON s.sql_id = sq.sql_id
+WHERE s.module LIKE '%MSC%'
+   OR s.blocking_session IS NOT NULL
+   OR s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
+   OR s.sid IN (SELECT session_id FROM v$locked_object WHERE locked_mode >= 3)
+CONNECT BY PRIOR s.sid = s.blocking_session
+START WITH s.blocking_session IS NULL
+       AND (
+           s.sid IN (SELECT blocking_session FROM v$session WHERE blocking_session IS NOT NULL)
+           OR s.sid IN (SELECT session_id FROM v$locked_object WHERE locked_mode >= 3)
+       )
+ORDER BY LEVEL ASC;"""
+
+HIERARCHICAL_LOCK_SQL_GV = """SELECT
     LEVEL AS lock_depth,
     CONNECT_BY_ISLEAF AS is_blocked_leaf,
     s.inst_id,
@@ -58,9 +90,63 @@ START WITH s.blocking_session IS NULL
        )
 ORDER BY LEVEL ASC;"""
 
+HIERARCHICAL_LOCK_SQL = HIERARCHICAL_LOCK_SQL_V
+
+FALLBACK_LOCK_SQL_V = """SELECT
+    1 AS lock_depth,
+    0 AS is_blocked_leaf,
+    1 AS inst_id,
+    s.sid,
+    s.serial# AS serial_number,
+    s.username AS oracle_username,
+    s.osuser AS os_user_name,
+    s.process AS os_process_id,
+    s.module,
+    s.action,
+    s.blocking_session,
+    lo.object_id,
+    do.object_name,
+    lo.locked_mode,
+    sq.sql_text AS current_sql_text
+FROM v$locked_object lo
+JOIN v$session s ON lo.session_id = s.sid
+LEFT JOIN dba_objects do ON lo.object_id = do.object_id
+LEFT JOIN v$sql sq ON s.sql_id = sq.sql_id
+ORDER BY lo.locked_mode DESC"""
+
+FALLBACK_LOCK_SQL_GV = """SELECT
+    1 AS lock_depth,
+    0 AS is_blocked_leaf,
+    s.inst_id,
+    s.sid,
+    s.serial# AS serial_number,
+    s.username AS oracle_username,
+    s.osuser AS os_user_name,
+    s.process AS os_process_id,
+    s.module,
+    s.action,
+    s.blocking_session,
+    lo.object_id,
+    do.object_name,
+    lo.locked_mode,
+    sq.sql_text AS current_sql_text
+FROM gv$locked_object lo
+JOIN gv$session s ON lo.session_id = s.sid AND lo.inst_id = s.inst_id
+LEFT JOIN dba_objects do ON lo.object_id = do.object_id
+LEFT JOIN gv$sql sq ON s.sql_id = sq.sql_id AND s.inst_id = sq.inst_id
+ORDER BY lo.locked_mode DESC"""
+
 SQL_QUERY_REGISTRY: dict[str, str] = {
-    "HIERARCHICAL_LOCK_TREE": HIERARCHICAL_LOCK_SQL,
+    "HIERARCHICAL_LOCK_TREE": HIERARCHICAL_LOCK_SQL_V,
+    "HIERARCHICAL_LOCK_TREE_RAC": HIERARCHICAL_LOCK_SQL_GV,
     "ORA_00054_LOCK_LOOKUP": (
+        "SELECT lo.session_id AS sid, s.serial#, 1 AS inst_id, lo.locked_mode, do.object_name "
+        "FROM v$locked_object lo "
+        "JOIN dba_objects do ON lo.object_id = do.object_id "
+        "JOIN v$session s ON lo.session_id = s.sid "
+        "WHERE do.object_name LIKE :table_pattern"
+    ),
+    "ORA_00054_LOCK_LOOKUP_RAC": (
         "SELECT lo.session_id AS sid, s.serial#, s.inst_id, lo.locked_mode, do.object_name "
         "FROM gv$locked_object lo "
         "JOIN dba_objects do ON lo.object_id = do.object_id "
@@ -72,6 +158,12 @@ SQL_QUERY_REGISTRY: dict[str, str] = {
         "FROM msc_apps_instances WHERE instance_id = :instance_id"
     ),
     "SESSION_UNDO_VOLUME_CHECK": (
+        "SELECT s.sid, s.serial#, 1 AS inst_id, t.used_urec, t.used_ublk, t.start_time "
+        "FROM v$session s "
+        "JOIN v$transaction t ON s.taddr = t.addr "
+        "WHERE s.sid = :sid"
+    ),
+    "SESSION_UNDO_VOLUME_CHECK_RAC": (
         "SELECT s.sid, s.serial#, s.inst_id, t.used_urec, t.used_ublk, t.start_time "
         "FROM gv$session s "
         "JOIN gv$transaction t ON s.taddr = t.addr AND s.inst_id = t.inst_id "
@@ -194,6 +286,7 @@ class LockDiagnosticsEngine:
             oracledb_mod = importlib.import_module("oracledb")
         cfg = self.config or getattr(self.pool, "config", None)
         target_host = getattr(cfg, "scan_address", None) or cfg.host
+        is_rac = bool(getattr(cfg, "is_rac", False))
         with oracledb_mod.connect(
             user=cfg.username,
             password=cfg.password,
@@ -201,35 +294,33 @@ class LockDiagnosticsEngine:
             port=cfg.port,
             service_name=cfg.service_name,
         ) as conn, conn.cursor() as cursor:
-            cursor.execute(HIERARCHICAL_LOCK_SQL)
+            # Query hierarchical locks: try RAC GV$ if configured, with automatic fallback to single-instance V$ on ORA-00942
+            primary_sql = HIERARCHICAL_LOCK_SQL_GV if is_rac else HIERARCHICAL_LOCK_SQL_V
+            fallback_sql = HIERARCHICAL_LOCK_SQL_V if is_rac else HIERARCHICAL_LOCK_SQL_GV
+            try:
+                cursor.execute(primary_sql)
+            except Exception as exc:
+                if "ORA-00942" in str(exc):
+                    logger.info("GV$ view not available (ORA-00942); falling back to localized V$ view.")
+                    cursor.execute(fallback_sql)
+                else:
+                    raise
+
             cols = [c[0].lower() for c in cursor.description]
             for row in cursor.fetchall():
                 results.append(self._row_to_item(dict(zip(cols, row))))
 
             if not results:
                 # Direct fallback for ORA-00054 where the victim errored NOWAIT and is no longer queued
-                fallback_sql = """SELECT
-                    1 AS lock_depth,
-                    0 AS is_blocked_leaf,
-                    s.inst_id,
-                    s.sid,
-                    s.serial# AS serial_number,
-                    s.username AS oracle_username,
-                    s.osuser AS os_user_name,
-                    s.process AS os_process_id,
-                    s.module,
-                    s.action,
-                    s.blocking_session,
-                    lo.object_id,
-                    do.object_name,
-                    lo.locked_mode,
-                    sq.sql_text AS current_sql_text
-                FROM gv$locked_object lo
-                JOIN gv$session s ON lo.session_id = s.sid AND lo.inst_id = s.inst_id
-                LEFT JOIN dba_objects do ON lo.object_id = do.object_id
-                LEFT JOIN gv$sql sq ON s.sql_id = sq.sql_id AND s.inst_id = sq.inst_id
-                ORDER BY lo.locked_mode DESC"""
-                cursor.execute(fallback_sql)
+                primary_fb = FALLBACK_LOCK_SQL_GV if is_rac else FALLBACK_LOCK_SQL_V
+                secondary_fb = FALLBACK_LOCK_SQL_V if is_rac else FALLBACK_LOCK_SQL_GV
+                try:
+                    cursor.execute(primary_fb)
+                except Exception as exc:
+                    if "ORA-00942" in str(exc):
+                        cursor.execute(secondary_fb)
+                    else:
+                        raise
                 cols = [c[0].lower() for c in cursor.description]
                 for row in cursor.fetchall():
                     results.append(self._row_to_item(dict(zip(cols, row))))
@@ -412,9 +503,20 @@ class LockDiagnosticsEngine:
         Prevents PMON rollback hang where held locks persist while un-abortable rollback executes.
         """
         if not self.pool.is_simulation:
-            query = SQL_QUERY_REGISTRY["SESSION_UNDO_VOLUME_CHECK"]
+            cfg = self.config or getattr(self.pool, "config", None)
+            is_rac = bool(getattr(cfg, "is_rac", False))
+            sql_rac = SQL_QUERY_REGISTRY["SESSION_UNDO_VOLUME_CHECK_RAC"]
+            sql_v = SQL_QUERY_REGISTRY["SESSION_UNDO_VOLUME_CHECK"]
+            primary = sql_rac if is_rac else sql_v
+            fallback = sql_v if is_rac else sql_rac
             try:
-                res = self.pool.execute_query(query, {"sid": sid})
+                try:
+                    res = self.pool.execute_query(primary, {"sid": sid})
+                except Exception as exc:
+                    if "ORA-00942" in str(exc):
+                        res = self.pool.execute_query(fallback, {"sid": sid})
+                    else:
+                        raise
                 records = res.to_dicts()
                 if records:
                     used_urec = records[0].get("used_urec", 0) or 0
@@ -449,22 +551,40 @@ class LockDiagnosticsEngine:
             return None
 
         if not self.pool.is_simulation:
+            cfg = self.config or getattr(self.pool, "config", None)
+            is_rac = bool(getattr(cfg, "is_rac", False)) or (inst_id is not None)
             if inst_id is not None:
-                sql = (
+                sql_rac = (
                     "SELECT s.inst_id, s.sid, s.serial#, s.status, s.username "
                     "FROM gv$session s "
                     "WHERE s.sid = :sid AND s.serial# = :serial AND s.inst_id = :inst_id"
                 )
-                params = {"sid": sid, "serial": serial, "inst_id": inst_id}
+                params_rac = {"sid": sid, "serial": serial, "inst_id": inst_id}
             else:
-                sql = (
+                sql_rac = (
                     "SELECT s.inst_id, s.sid, s.serial#, s.status, s.username "
                     "FROM gv$session s "
                     "WHERE s.sid = :sid AND s.serial# = :serial"
                 )
-                params = {"sid": sid, "serial": serial}
+                params_rac = {"sid": sid, "serial": serial}
+
+            sql_v = (
+                "SELECT 1 AS inst_id, s.sid, s.serial#, s.status, s.username "
+                "FROM v$session s "
+                "WHERE s.sid = :sid AND s.serial# = :serial"
+            )
+            params_v = {"sid": sid, "serial": serial}
+
+            query_pri, params_pri = (sql_rac, params_rac) if is_rac else (sql_v, params_v)
+            query_sec, params_sec = (sql_v, params_v) if is_rac else (sql_rac, params_rac)
             try:
-                res = self.pool.execute_query(sql, params)
+                try:
+                    res = self.pool.execute_query(query_pri, params_pri)
+                except Exception as exc:
+                    if "ORA-00942" in str(exc):
+                        res = self.pool.execute_query(query_sec, params_sec)
+                    else:
+                        raise
                 records = res.to_dicts()
                 if records and records[0].get("status") != "KILLED":
                     return records[0]
