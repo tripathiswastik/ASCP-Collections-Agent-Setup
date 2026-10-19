@@ -141,51 +141,61 @@ sequenceDiagram
 
 ---
 
-## 🏗️ Repository Structure
+## 🏗️ Repository Architecture
 
-```
-d:\ag-ai\ascp-diagnostic-agent/
-├── pyproject.toml            # PEP 621 build and metadata specification
-├── requirements.txt          # Pinned runtime and testing dependencies
-├── .github/
-│   └── workflows/
-│       └── ci.yml            # CI matrix testing Python 3.10, 3.11, and 3.12
-├── ascp_agent/
-│   ├── config.py             # Oracle, PostgreSQL, ServiceNow, and Guardrails config
-│   ├── db.py                 # Enterprise Oracle connection pool & simulation fallback
-│   ├── state.py              # DiagnosticState, Typed Reducers, Command, interrupt primitives
-│   ├── graph.py              # LangGraph StateGraph, table-driven HITL gate, checkpointer
-│   ├── drain_parser.py       # Drain log parsing tree algorithm
-│   ├── lock_engine.py        # Dynamic performance views & hierarchical lock query
-│   ├── pipeline_monitor.py   # ASCP ETL stages & ST_STATUS registry monitor
-│   ├── failure_modes.py      # Diagnostic catalog (ORA-00054, ORA-14098, ORA-02478, ORA-00001, ORA-12571)
-│   ├── hitl_governance.py    # Risk-tiered governance rules and executor table
-│   ├── remediation.py        # Unified _run helper, RAC session kill, and staging purge
-│   ├── itsm_service_now.py   # ServiceNow Table REST API dispatcher with correlation ID
-│   ├── guardrails.py         # Least-privilege, prompt sanitization, RAC regex, token tracking
-│   ├── simulator.py          # Realistic Oracle EBS scenario presets
-│   └── cli.py                # Interactive CLI diagnostic utility
-├── tests/
-│   ├── test_drain_parser.py
-│   ├── test_lock_engine.py
-│   ├── test_db_pool.py
-│   ├── test_langgraph_agent.py
-│   ├── test_failure_scenarios.py
-│   ├── test_safety_and_governance.py
-│   ├── test_security_fixes.py
-│   ├── test_property_validation.py     # Property-style validation tests
-│   ├── test_http_auth_and_roles.py     # Multi-threaded HTTP auth and RBAC tests
-│   ├── test_end_to_end_hitl.py         # Full HITL lifecycle & tamper tests
-│   └── run_all_tests.py                # Complete test runner
-├── web/
-│   ├── server.py             # Multi-threaded secure HTTP server & REST API backend
-│   ├── index.html            # Canonical executive dashboard UI
-│   ├── app.js                # Frontend state, SVG tree visualizer, and HITL controller
-│   └── style.css             # Glassmorphic dark-theme stylesheet
-├── scripts/
-│   ├── verify_dashboard_flow.py  # End-to-end verification script
-│   └── package_release.py       # Distribution packager excluding caches & Git
-└── sample_logs/              # Real-world Oracle ASCP log files
+```text
+ascp-diagnostic-agent/
+├── ascp_agent/                     # Core diagnostic & remediation engine
+│   ├── graph.py                    # LangGraph orchestration state machine & HITL interrupt gate
+│   ├── state.py                    # DiagnosticState definitions & typed reducers
+│   ├── lock_engine.py              # Oracle lock tree analysis (V$ & GV$ dynamic performance views)
+│   ├── pipeline_monitor.py         # ASCP ETL stage progression & ST_STATUS registry monitor
+│   ├── drain_parser.py             # Drain log parsing tree for unstructured concurrent logs
+│   ├── failure_modes.py            # Diagnostic catalog (ORA-00054, ORA-14098, ORA-02478, etc.)
+│   ├── hitl_governance.py          # Action-bound approval fingerprints, TTL, and governance rules
+│   ├── remediation.py              # Safe remediation actions (RAC session kill, staging purge)
+│   ├── guardrails.py               # SQL safety validation, prompt sanitization, least-privilege checks
+│   ├── db.py                       # Oracle connection pool with automatic simulation fallback
+│   ├── itsm_service_now.py         # ServiceNow REST incident dispatcher & tracking
+│   ├── config.py                   # Centralized runtime configuration & environment loader
+│   ├── simulator.py                # Realistic Oracle EBS scenario presets for offline development
+│   └── cli.py                      # Interactive terminal CLI diagnostic tool
+│
+├── web/                            # Real-time web operations dashboard
+│   ├── server.py                   # Multi-threaded REST API server with token authentication & RBAC
+│   ├── index.html                  # Operations console & incident response dashboard
+│   ├── app.js                      # Live SVG lock-tree visualizer & HITL approval controller
+│   └── style.css                   # Glassmorphic dark-theme console styling
+│
+├── tests/                          # 115-test verification & evaluation suite
+│   ├── run_all_tests.py            # Primary standalone test runner
+│   ├── eval_harness.py             # Quantitative evaluation benchmark harness
+│   ├── test_oracle_live_integration.py # Real Oracle container & RAC contention tests (ORA-00054)
+│   ├── test_end_to_end_hitl.py     # Complete HITL lifecycle, tamper-resistance & anti-replay
+│   ├── test_guardrail_adversarial.py# SQL injection, CTE bypass, and role-boundary validation
+│   ├── test_incident_benchmark.py  # 35+ incident catalog benchmark verification
+│   ├── test_orchestration_edge_cases.py # Pipeline crashes, network backoffs, and reducer safety
+│   ├── test_lock_engine.py         # Dynamic performance view queries & fallback logic
+│   ├── test_drain_parser.py        # Log clustering and parameter template extraction
+│   └── test_http_auth_and_roles.py # Constant-time token verification & RBAC enforcement
+│
+├── scripts/                        # Automation & deployment utilities
+│   ├── wait_for_oracle.py          # Oracle listener readiness polling script
+│   ├── wait_for_container.sh       # Docker container healthcheck verification
+│   ├── verify_dashboard_flow.py    # End-to-end dashboard integration test
+│   └── package_release.py          # Distribution packaging utility
+│
+├── .github/workflows/              # Continuous integration pipelines
+│   ├── ci.yml                      # Python 3.10-3.12 test matrix, lint, and live Oracle integration
+│   ├── docker-compose-test.yml     # Docker compose test workflow
+│   └── e2e-safety.yml              # End-to-end safety & guardrail compliance
+│
+├── Dockerfile                      # Production container image definition
+├── docker-compose.yml              # Local multi-service development stack
+├── docker-compose.test.yml         # Ephemeral Oracle container integration test setup
+├── pyproject.toml                  # Project metadata, build configuration, and tool settings
+├── requirements.txt                # Pinned production and test dependencies
+└── sample_logs/                    # Real-world Oracle ASCP concurrent request logs
 ```
 
 ---
