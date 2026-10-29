@@ -367,5 +367,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 ## 🏷️ Repository Metadata & Topic Tags
-- **Core Topics**: `oracle-ebs` `ascp` `diagnostic-agent` `langgraph` `ai-agents` `security-guardrails` `python` `docker`
+- **About Description**: Autonomous LangGraph diagnostic control plane for Oracle EBS/ASCP batch pipelines with Drain log parsing and real-time Oracle lock introspection.
+- **Core Topics**: `oracle-ebs` `ascp` `diagnostic-agent` `langgraph` `ai-agents` `log-parsing` `hitl-governance` `security-guardrails` `python` `docker`
 - **Governance**: Follows [Antigravity AI Rules](file:///d:/ag-ai/.agents/rules/antigravity-rules.md) and [Multi-Agent SDLC Contracts](file:///d:/ag-ai/.agents/rules/multi-agent-prompts.md).
