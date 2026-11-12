@@ -172,8 +172,8 @@ class TestOracleLiveIntegration(unittest.TestCase):
                 ) as conn, conn.cursor() as cur:
                     cur.execute(f"DROP TABLE {cls.test_table_name} PURGE")  # nosec B608
                     conn.commit()
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except (OSError, RuntimeError) as err:
+                logger.debug("Failed to drop test table %s: %s", cls.test_table_name, err)
 
     def setUp(self):
         self._active_connections = []
@@ -183,12 +183,12 @@ class TestOracleLiveIntegration(unittest.TestCase):
         for conn in self._active_connections:
             try:
                 conn.rollback()
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except (OSError, RuntimeError) as err:
+                logger.debug("Rollback failed during teardown: %s", err)
             try:
                 conn.close()
-            except Exception:  # noqa: BLE001, S110
-                pass
+            except (OSError, RuntimeError) as err:
+                logger.debug("Connection close failed during teardown: %s", err)
         self._active_connections.clear()
 
     def _open_tracked_connection(self):
@@ -276,8 +276,8 @@ class TestOracleLiveIntegration(unittest.TestCase):
             if pool:
                 try:
                     pool.close()
-                except Exception:  # noqa: BLE001, S110
-                    pass
+                except (OSError, RuntimeError) as err:
+                    logger.debug("Pool close failed: %s", err)
 
 
 if __name__ == "__main__":
