@@ -30,8 +30,8 @@ def load_env_file(dotenv_path: str | None = None) -> None:
                     v = v.strip().strip("'\"")
                     if k and k not in os.environ:
                         os.environ[k] = v
-        except OSError:
-            pass
+        except (FileNotFoundError, PermissionError):
+            return
 
 
 load_env_file()

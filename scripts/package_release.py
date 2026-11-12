@@ -96,8 +96,8 @@ def clean_local_bytecode(root: Path):
         try:
             pyc.unlink(missing_ok=True)
             removed_count += 1
-        except OSError:
-            pass
+        except OSError as exc:
+            print(f"[!] Warning: failed to unlink {pyc}: {exc}")
     print(f"[+] Purged {removed_count} local pycache / bytecode entries.")
 
 

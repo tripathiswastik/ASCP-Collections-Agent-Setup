@@ -39,7 +39,7 @@ class QueryResult:
 
 
 class OracleConnectionPool:
-    """Enterprise connection pool manager for Oracle Database with seamless simulation fallback.
+    """Enterprise connection pool manager for Oracle Database with automated simulation fallback.
 
     Supports python-oracledb in thin mode (default, zero client libraries required)
     and provides unified synchronous and asynchronous context managers.
@@ -68,7 +68,7 @@ class OracleConnectionPool:
     @property
     def is_simulation(self) -> bool:
         """Returns True ONLY when explicitly configured for simulation."""
-        return bool(self.config.use_simulation)
+        return self.config.use_simulation
 
     def initialize_sync_pool(self, min_conn: int = 1, max_conn: int = 5) -> bool:
         """Initializes synchronous connection pool. Fails closed if live mode cannot be established."""
@@ -193,7 +193,7 @@ class OracleConnectionPool:
                     try:
                         conn.call_timeout = int(timeout_sec * 1000)
                     except AttributeError:
-                        pass
+                        logger.debug("Oracle connection does not support call_timeout property")
                     with conn.cursor() as cursor:
                         cursor.execute(sql, params)
                         cols = [c[0] for c in cursor.description] if cursor.description else []

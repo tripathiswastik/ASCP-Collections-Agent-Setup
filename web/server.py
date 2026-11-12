@@ -61,7 +61,7 @@ def validate_operator_tokens(tokens: dict[str, Any], is_production: bool = True)
     """
     validated: dict[str, Any] = {}
     for tok, meta in tokens.items():
-        tok_clean = str(tok).strip()
+        tok_clean = tok.strip()
         tok_lower = tok_clean.lower()
         if any(ph in tok_lower for ph in PLACEHOLDER_TOKEN_PATTERNS):
             raise ValueError(
@@ -221,6 +221,9 @@ class Operator(str):
     """Operator identity carrying name and permissions role ('approver' vs 'viewer').
     Defaults strictly to 'viewer' (least-privilege / deny by default).
     """
+    name: str
+    role: str
+
     def __new__(cls, name: str, role: str = "viewer"):
         obj = super().__new__(cls, name)
         obj.name = name
@@ -305,7 +308,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
         supplied = _extract_api_token(self.headers)
         if not supplied:
             return None
-        active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
+        active_tokens: dict[str, Any] = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
         active_tokens.update(OPERATOR_TOKENS)
         return resolve_operator(supplied, active_tokens)
 
@@ -403,6 +406,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self._send_json({"status": "healthy", "service": "ascp-diagnostic-agent", "timestamp": time.time()})
             return
 
+        operator: Operator | None = None
         if path.startswith("/api/"):
             operator = self._authenticate()
             if operator is None:
@@ -534,6 +538,48 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(content)
 
+    def _handle_scenario_load(self, req_data: dict[str, Any], operator: Any) -> None:
+        global current_scenario_key, _ACTIVE_SESSION_ID, thread_counter
+        key = req_data.get("key", "ora_00054_mode6")
+        if key in SCENARIOS:
+            with _SERVER_LOCK:
+                _prune_expired_sessions()
+                current_scenario_key = key
+                thread_counter += 1
+                sess_id = req_data.get("session_id") or f"sess-{uuid.uuid4().hex[:8]}"
+                new_graph = create_ascp_diagnostic_graph()
+                session_info = {
+                    "graph": new_graph,
+                    "thread_id": f"web-thread-{thread_counter}",
+                    "scenario_key": key,
+                    "session_id": sess_id,
+                    "pending_approval": None,
+                    "created_at": time.time(),
+                    "last_state": {},
+                    "operator": str(operator)
+                }
+                _SESSIONS[sess_id] = session_info
+                _ACTIVE_SESSION_ID = sess_id
+                _OPERATOR_SESSIONS[str(operator)] = sess_id
+            self._send_json({"success": True, "loaded_scenario": SCENARIOS[key], "session_id": sess_id})
+        else:
+            self._send_json({"error": "Unknown scenario"}, 400)
+
+    def _handle_parse_log(self, req_data: dict[str, Any]) -> None:
+        log_text = req_data.get("log_text", "")
+        if not log_text:
+            with _SERVER_LOCK:
+                scen_key = current_scenario_key
+            log_text = "\n".join(SCENARIOS[scen_key]["logs"])
+        max_lines = req_data.get("max_lines", 500)
+        if not isinstance(max_lines, int) or max_lines < 1:
+            max_lines = 500
+        max_lines = min(max_lines, 2000)
+
+        parser = DrainLogParser()
+        parsed_results = parser.parse_log_text(log_text, max_lines=max_lines)
+        self._send_json({"results": parsed_results, "count": len(parsed_results)})
+
     def do_POST(self):
         global current_scenario_key, _ACTIVE_SESSION_ID, thread_counter
         _init_default_session()
@@ -551,45 +597,10 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if path == "/api/scenario/load":
-            key = req_data.get("key", "ora_00054_mode6")
-            if key in SCENARIOS:
-                with _SERVER_LOCK:
-                    _prune_expired_sessions()
-                    current_scenario_key = key
-                    thread_counter += 1
-                    sess_id = req_data.get("session_id") or f"sess-{uuid.uuid4().hex[:8]}"
-                    new_graph = create_ascp_diagnostic_graph()
-                    session_info = {
-                        "graph": new_graph,
-                        "thread_id": f"web-thread-{thread_counter}",
-                        "scenario_key": key,
-                        "session_id": sess_id,
-                        "pending_approval": None,
-                        "created_at": time.time(),
-                        "last_state": {},
-                        "operator": str(operator)
-                    }
-                    _SESSIONS[sess_id] = session_info
-                    _ACTIVE_SESSION_ID = sess_id
-                    _OPERATOR_SESSIONS[str(operator)] = sess_id
-                self._send_json({"success": True, "loaded_scenario": SCENARIOS[key], "session_id": sess_id})
-            else:
-                self._send_json({"error": "Unknown scenario"}, 400)
+            self._handle_scenario_load(req_data, operator)
 
         elif path == "/api/parse-log":
-            log_text = req_data.get("log_text", "")
-            if not log_text:
-                with _SERVER_LOCK:
-                    scen_key = current_scenario_key
-                log_text = "\n".join(SCENARIOS[scen_key]["logs"])
-            max_lines = req_data.get("max_lines", 500)
-            if not isinstance(max_lines, int) or max_lines < 1:
-                max_lines = 500
-            max_lines = min(max_lines, 2000)
-
-            parser = DrainLogParser()
-            parsed_results = parser.parse_log_text(log_text, max_lines=max_lines)
-            self._send_json({"results": parsed_results, "count": len(parsed_results)})
+            self._handle_parse_log(req_data)
 
         elif path == "/api/diagnose":
             action = req_data.get("action")  # e.g., "RESUME" or "START"
@@ -629,9 +640,11 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                     self._send_json({"error": f"Session '{sess_id}' not found or expired"}, 404)
                     return
 
-            curr_graph = session_info["graph"]
-            thread_id = session_info["thread_id"]
-            scen_key = session_info["scenario_key"]
+            curr_graph: Any = session_info["graph"]
+            thread_id = str(session_info.get("thread_id", "web-thread-1"))
+            scen_key = str(session_info.get("scenario_key", "ora_00054_mode6"))
+            raw_created = session_info.get("created_at")
+            sess_created = float(raw_created) if isinstance(raw_created, (int, float, str)) else time.time()
 
             try:
                 if action == "RESUME":
@@ -652,7 +665,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         return
 
                     pending = session_info.get("pending_approval")
-                    if not pending:
+                    if not isinstance(pending, dict):
                         self._send_json({"error": "No pending HITL remediation checkpoint for this session"}, 400)
                         return
 
@@ -667,8 +680,10 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         return
 
                     # Expiration check
-                    if time.time() > pending.get("expires_at", 0):
-                        _remember_approval(appr_id, pending.get("expires_at", time.time() + 3600))
+                    raw_exp = pending.get("expires_at", 0)
+                    exp_time = float(raw_exp) if isinstance(raw_exp, (int, float, str)) else 0.0
+                    if exp_time > 0 and time.time() > exp_time:
+                        _remember_approval(appr_id, exp_time)
                         self._send_json({
                             "error": f"Approval '{appr_id}' has expired (TTL exceeded at {pending.get('expires_at_iso')})"
                         }, 400)
@@ -699,7 +714,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         return
 
                     # Mark approval as used to prevent replay attacks
-                    _remember_approval(appr_id, pending.get("expires_at", time.time() + 3600))
+                    _remember_approval(appr_id, exp_time if exp_time > 0 else time.time() + 3600)
                     session_info["pending_approval"] = None
 
                     notes = str(req_data.get("notes", f"Decision rendered by {operator}"))[:500]
@@ -732,11 +747,12 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                         "is_remediated": state.get("is_remediated"),
                         "remediation_result": state.get("remediation_result")
                     })
-                    approval_created = pending.get("created_at") or session_info.get("created_at", time.time())
+                    raw_appr_created = pending.get("created_at")
+                    approval_created = float(raw_appr_created) if isinstance(raw_appr_created, (int, float, str)) else sess_created
                     lat_secs = max(0.0, time.time() - approval_created)
                     GLOBAL_METRICS.record_approval_decision(approved, latency_seconds=lat_secs)
                     if state.get("is_remediated"):
-                        tot_mttr = max(0.0, time.time() - session_info.get("created_at", time.time()))
+                        tot_mttr = max(0.0, time.time() - sess_created)
                         GLOBAL_METRICS.record_resolution(mttr_seconds=tot_mttr, was_successful=True)
                 else:
                     raw_logs = SCENARIOS.get(scen_key, SCENARIOS["ora_00054_mode6"])["logs"]
@@ -745,7 +761,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
                             initial_state={"remediation_action": "INSPECT_LOCKS", "raw_logs": raw_logs},
                             config={"configurable": {"thread_id": thread_id}}
                         )
-                    diag_duration = max(0.0, time.time() - session_info.get("created_at", time.time()))
+                    diag_duration = max(0.0, time.time() - sess_created)
                     GLOBAL_METRICS.record_diagnosis(duration_seconds=diag_duration)
             except Exception:
                 logger.exception("Diagnostic Agent execution error")
@@ -787,7 +803,7 @@ class ASCPDiagnosticHandler(http.server.SimpleHTTPRequestHandler):
 
 def run_server(port: int = 8085, host: str = "127.0.0.1"):
     _init_default_session()
-    active_tokens = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
+    active_tokens: dict[str, Any] = dict(GLOBAL_SECRET_MANAGER.get_operator_tokens())
     active_tokens.update(OPERATOR_TOKENS)
     env_mode = os.environ.get("ASCP_ENV", "production").lower()
     is_loopback = host in ("127.0.0.1", "localhost", "::1")
