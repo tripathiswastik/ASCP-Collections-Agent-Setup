@@ -57,14 +57,14 @@ class TestOracleConnectionPool(unittest.TestCase):
 
     def test_async_simulation_query_execution(self):
         """Validates async query execution in simulation mode."""
-        import asyncio
-        loop = asyncio.new_event_loop()
+        coro = self.pool.execute_query_async("SELECT * FROM V$LOCK")
         try:
-            res = loop.run_until_complete(self.pool.execute_query_async("SELECT * FROM V$LOCK"))
+            coro.send(None)
+            self.fail("Coroutine should complete immediately in simulation mode")
+        except StopIteration as exc:
+            res = exc.value
             self.assertTrue(res.is_simulated)
             self.assertEqual(res.columns, ["STATUS", "MESSAGE"])
-        finally:
-            loop.close()
 
     def test_singleton_get_oracle_pool(self):
         """Validates get_oracle_pool singleton returns consistent pool instance."""
